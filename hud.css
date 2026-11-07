@@ -1,0 +1,788 @@
+/* hud.css — the menus that open over the home screen and aren't Sheets: Memory,
+   and the allowed-folder list. The home screen itself is home.css (+ ironman.css).
+   Tokens are the desktop's neutral surfaces; the accent is --ac / --ac2 on .hud. */
+
+:root {
+  --bg-0: #0a0c10;
+  --bg-1: #0e1116;
+  --line: rgba(255, 255, 255, 0.07);
+  --txt: #e8edf2;
+  --txt-2: #9ba6b2;
+  --txt-3: #67717c;
+  --amber: #ffb648;
+  --mono: "Share Tech Mono", ui-monospace, monospace;
+  --disp: "Orbitron", "Inter", sans-serif;
+  --body: "Inter", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+.hud {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  overflow: clip; /* never scrolled sideways by focus */
+  background: var(--bg-0);
+  color: var(--txt);
+  font-family: var(--body);
+  font-size: 15px;
+  --ac: #00e5ff;
+  --ac2: #6fe9ff;
+}
+
+/* Lock page scroll while a full-screen menu is open. */
+html.app-mobile--overlay-open,
+html.app-mobile--overlay-open body {
+  overflow: hidden !important;
+  height: 100%;
+  touch-action: none;
+}
+
+/* directory allowlist (shared look with Settings) */
+.dirlist {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.dirlist-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 11px;
+  background: color-mix(in oklab, var(--ac) 5%, transparent);
+  border: 2px solid color-mix(in oklab, var(--ac) 18%, transparent);
+  border-radius: 6px;
+}
+.dirlist-path {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ac2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dirlist-rm {
+  background: none;
+  border: none;
+  color: var(--txt-3);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.dirlist-rm:hover {
+  background: rgba(255, 84, 104, 0.14);
+  color: #ff97a3;
+}
+.dirlist-add {
+  display: flex;
+  gap: 7px;
+}
+.dirlist-add input {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.04);
+  border: 3px solid color-mix(in oklab, var(--ac) 22%, transparent);
+  border-radius: 6px;
+  color: var(--txt);
+  padding: 9px 11px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  outline: none;
+}
+.dirlist-add input:focus {
+  border-color: var(--ac);
+}
+.dirlist-addbtn {
+  background: color-mix(in oklab, var(--ac) 12%, transparent);
+  border: 3px solid color-mix(in oklab, var(--ac) 34%, transparent);
+  border-radius: 6px;
+  color: var(--ac);
+  cursor: pointer;
+  font-family: var(--disp);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 0 16px;
+}
+.dirlist-addbtn:hover {
+  background: color-mix(in oklab, var(--ac) 22%, transparent);
+}
+
+/* ═════════════ Memory — what JARVIS has stored (dock → MEMORY) ═════════════ */
+.memx {
+  position: absolute;
+  inset: 0;
+  z-index: 65;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.22s ease;
+}
+.memx.open {
+  pointer-events: auto;
+  opacity: 1;
+}
+.memx-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(2, 5, 9, 0.74);
+  backdrop-filter: blur(6px);
+}
+.memx-panel {
+  position: absolute;
+  inset: 44px 96px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(9, 18, 28, 0.97), rgba(4, 8, 14, 0.985));
+  border: 1px solid color-mix(in oklab, var(--ac) 22%, transparent);
+  border-radius: 12px;
+  box-shadow:
+    0 30px 90px rgba(0, 0, 0, 0.6),
+    inset 0 1px 0 color-mix(in oklab, var(--ac) 16%, transparent);
+  transform: translateY(10px) scale(0.99);
+  transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.memx.open .memx-panel {
+  transform: none;
+}
+
+.memx-hd {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 26px 32px 16px;
+}
+.memx-hd-txt {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.memx-kicker {
+  font-family: var(--disp);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 4px;
+  color: var(--ac);
+}
+.memx-title {
+  font-family: var(--body);
+  font-weight: 300;
+  font-size: 32px;
+  letter-spacing: -0.5px;
+  line-height: 1.1;
+  color: var(--txt);
+}
+.memx-loc {
+  font-size: 12.5px;
+  color: var(--txt-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.memx-loc code {
+  font-family: var(--mono);
+  color: var(--txt-2);
+}
+.memx-close {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  background: none;
+  color: var(--txt-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
+}
+.memx-close:hover,
+.memx-close:focus-visible {
+  color: var(--txt);
+  border-color: var(--ac);
+  outline: none;
+}
+
+/* timeline: one tick per memory, placed at the moment it was formed */
+.memx-tl {
+  padding: 4px 32px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.memx-tl-track {
+  position: relative;
+  height: 34px;
+  border-bottom: 1px solid color-mix(in oklab, var(--ac) 30%, transparent);
+  background-image: repeating-linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--ac) 12%, transparent) 0 1px,
+    transparent 1px 2.5%
+  );
+  background-size: 100% 6px;
+  background-position: bottom;
+  background-repeat: no-repeat;
+}
+.memx-tick {
+  position: absolute;
+  bottom: 0;
+  width: 2px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+  transform: translateX(-1px);
+  background: var(--kc);
+  border-radius: 1px 1px 0 0;
+  opacity: 0.8;
+  transition:
+    height 0.15s,
+    opacity 0.15s,
+    box-shadow 0.15s;
+}
+.memx-tick::before {
+  content: "";
+  position: absolute;
+  inset: -4px -5px 0;
+}
+.memx-tick:hover {
+  height: 32px;
+  opacity: 1;
+  box-shadow: 0 0 10px var(--kc);
+}
+.memx-tl-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 7px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  color: var(--txt-3);
+}
+
+.memx-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+}
+.memx-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 18px 14px;
+  border-right: 1px solid var(--line);
+}
+.memx-navbtn {
+  display: grid;
+  grid-template-columns: 2px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  color: var(--txt-2);
+  font-family: var(--body);
+  font-size: 14px;
+  font-weight: 500;
+  transition:
+    background 0.15s,
+    color 0.15s,
+    border-color 0.15s;
+}
+.memx-navbtn:hover {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--txt);
+}
+.memx-navbtn:focus-visible {
+  outline: none;
+  border-color: var(--kc);
+}
+.memx-navbtn.is-on {
+  color: var(--txt);
+  background: color-mix(in oklab, var(--kc) 9%, transparent);
+  border-color: color-mix(in oklab, var(--kc) 26%, transparent);
+}
+.memx-sw {
+  width: 2px;
+  height: 16px;
+  border-radius: 1px;
+  background: var(--kc);
+}
+.memx-count {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--txt-3);
+  font-variant-numeric: tabular-nums;
+}
+.memx-navbtn.is-on .memx-count {
+  color: var(--kc);
+}
+.memx-navnote {
+  margin-top: auto;
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--txt-3);
+}
+
+.memx-main {
+  position: relative;
+  overflow-y: auto;
+  padding: 22px 32px 32px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--ac) 30%, transparent) transparent;
+}
+.memx-sec-hd h3 {
+  font-family: var(--body);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--txt);
+}
+.memx-sec-hd p {
+  margin-top: 4px;
+  font-size: 13.5px;
+  color: var(--txt-2);
+}
+
+.memx-add {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+}
+.memx-add input {
+  flex: 1;
+  min-width: 0;
+  padding: 11px 14px;
+  border-radius: 8px;
+  outline: none;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid color-mix(in oklab, var(--ac) 18%, transparent);
+  color: var(--txt);
+  font-family: var(--body);
+  font-size: 14.5px;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+.memx-add input::placeholder {
+  color: var(--txt-3);
+}
+.memx-digest {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--txt-3);
+}
+.memx-digest input {
+  margin-top: 3px;
+  accent-color: var(--ac);
+}
+.memx-add input:focus {
+  border-color: var(--ac);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--ac) 14%, transparent);
+}
+.memx-add button {
+  padding: 0 18px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  background: var(--ac);
+  color: #021018;
+  font-family: var(--body);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.memx-add button:hover:not(:disabled) {
+  background: var(--ac2);
+}
+.memx-add button:focus-visible {
+  outline: 2px solid var(--ac2);
+  outline-offset: 2px;
+}
+.memx-add button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.memx-list {
+  list-style: none;
+  margin-top: 12px;
+}
+.memx-list > li {
+  border-top: 1px solid var(--line);
+  transition: background 1.2s ease;
+  border-radius: 6px;
+}
+.memx-list > li:first-child {
+  border-top: none;
+}
+.memx-list > li.is-focus {
+  background: color-mix(in oklab, var(--ac) 8%, transparent);
+  transition: none;
+}
+.memx-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 13px 6px;
+  min-width: 0;
+}
+.memx-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--txt);
+}
+.memx-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--txt);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.memx-name::first-letter {
+  text-transform: uppercase;
+}
+.memx-meta {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--txt-3);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.memx-badge {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 1px;
+  color: #6ee7a8;
+  border: 1px solid rgba(110, 231, 168, 0.35);
+  border-radius: 4px;
+  padding: 2px 7px;
+}
+
+.memx-forget,
+.memx-open {
+  flex: 0 0 auto;
+  padding: 5px 11px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: var(--body);
+  font-size: 12.5px;
+  font-weight: 500;
+  background: none;
+  transition:
+    opacity 0.15s,
+    color 0.15s,
+    border-color 0.15s,
+    background 0.15s;
+}
+.memx-forget {
+  color: var(--txt-3);
+  border: 1px solid transparent;
+  opacity: 0;
+}
+.memx-list > li:hover .memx-forget,
+.memx-forget:focus-visible {
+  opacity: 1;
+}
+.memx-forget:hover,
+.memx-forget:focus-visible {
+  color: #ff97a3;
+  border-color: rgba(255, 84, 104, 0.4);
+  outline: none;
+}
+.memx-forget.is-armed {
+  opacity: 1;
+  color: #ffd0d6;
+  background: rgba(255, 84, 104, 0.16);
+  border-color: rgba(255, 84, 104, 0.6);
+}
+.memx-open {
+  color: var(--ac2);
+  border: 1px solid color-mix(in oklab, var(--ac) 26%, transparent);
+}
+.memx-open:hover,
+.memx-open:focus-visible {
+  border-color: var(--ac);
+  color: var(--txt);
+  outline: none;
+}
+.memx-row--current {
+  margin-top: 14px;
+  padding: 11px 6px 11px 14px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+}
+
+.memx-card {
+  padding-bottom: 12px;
+}
+.memx-card .memx-row {
+  padding-bottom: 8px;
+}
+.memx-trig {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+}
+.memx-trig span {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: var(--txt-3);
+  text-transform: uppercase;
+  margin-right: 4px;
+}
+.memx-trig em {
+  font-style: normal;
+  font-size: 12.5px;
+  color: var(--ac2);
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--ac) 8%, transparent);
+  border: 1px solid color-mix(in oklab, var(--ac) 20%, transparent);
+}
+.memx-steps {
+  margin-top: 9px;
+  padding: 0 6px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--txt-2);
+}
+
+.memx-empty {
+  padding: 28px 6px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--txt-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .memx,
+  .memx-panel,
+  .memx-tick,
+  .memx-list > li {
+    transition: none;
+  }
+}
+
+/* ── Memory overlay: full-screen sheet; sections become a tab row ── */
+.home--phone .memx {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 260 !important;
+}
+/* Same shell as every other sheet: a 56px header with the place's name and a
+   borderless close, the sheet surface, no tick timeline (2px ticks aren't tappable
+   on a phone). */
+.home--phone .memx-panel {
+  inset: 0;
+  border-radius: 0;
+  border: none;
+  box-shadow: none;
+  background: var(--bg-1);
+}
+.home--phone .memx-hd {
+  align-items: center;
+  min-height: 56px;
+  padding: env(safe-area-inset-top, 0px) 8px 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+.home--phone .memx-kicker,
+.home--phone .memx-loc,
+.home--phone .memx-tl {
+  display: none;
+}
+.home--phone .memx-title {
+  font-family: var(--body);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.home--phone .memx-close {
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 10px;
+}
+.memx-lede {
+  margin-bottom: 18px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--txt-2);
+}
+.home--phone .memx-body {
+  display: flex;
+  flex-direction: column;
+}
+/* Sections as a segmented control, like Customize's choices. */
+.home--phone .memx-nav {
+  flex-direction: row;
+  gap: 0;
+  margin: 12px 16px 0;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.25);
+}
+.home--phone .memx-navbtn {
+  display: flex;
+  align-items: center;
+  flex: 1 1 0;
+  justify-content: center;
+  min-width: 0;
+  min-height: 38px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  font-size: 13.5px;
+  gap: 6px;
+}
+.home--phone .memx-navbtn.is-on {
+  background: color-mix(in srgb, var(--ac) 18%, transparent);
+  font-weight: 600;
+}
+.home--phone .memx-sw {
+  display: none;
+}
+.home--phone .memx-navl {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home--phone .memx-navnote {
+  display: none;
+}
+.home--phone .memx-main {
+  flex: 1;
+  padding: 16px 16px max(24px, env(safe-area-inset-bottom, 0px));
+}
+.home--phone .memx-row {
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.home--phone .memx-text {
+  flex-basis: 100%;
+}
+/* No hover on touch: Forget must always be visible. */
+.home--phone .memx-forget {
+  opacity: 1;
+  min-height: 36px;
+}
+.home--phone .memx-open {
+  min-height: 36px;
+}
+
+/* Memory rows sit in one rounded well, like every other sheet's lists. */
+.home--phone .memx-list:not(:empty) {
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 12px;
+  background: #12161c;
+}
+.home--phone .memx-list > li {
+  border-radius: 0;
+  border-top-color: var(--line);
+}
+.home--phone .memx-row {
+  padding: 12px 14px;
+}
+.home--phone .memx-meta {
+  font-family: var(--body);
+  font-size: 12.5px;
+}
+.home--phone .memx-forget {
+  margin-left: auto;
+}
+
+/* Memory's search box (the desktop's), beside the close button. */
+.memx-hd-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.memx-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 280px;
+  color: var(--txt-3);
+}
+.memx-search > svg {
+  position: absolute;
+  left: 11px;
+  pointer-events: none;
+}
+.memx-search input {
+  width: 100%;
+  height: 38px;
+  padding: 0 12px 0 34px;
+  border-radius: 8px;
+  outline: none;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  color: var(--txt);
+  font-family: var(--body);
+  font-size: 14px;
+}
+.memx-search input:focus {
+  border-color: var(--ac);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--ac) 14%, transparent);
+}
+.memx-search input::placeholder {
+  color: var(--txt-3);
+}
+.memx-jump {
+  margin-left: 10px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  color: var(--ac2);
+  text-decoration: underline;
+}
+.home--phone .memx-hd {
+  gap: 8px;
+}
+.home--phone .memx-hd-tools {
+  flex: 1;
+  min-width: 0;
+  justify-content: flex-end;
+}
+.home--phone .memx-search {
+  flex: 1;
+  width: auto;
+  max-width: 260px;
+}
+.home--phone .memx-search input {
+  font-size: 16px;
+}

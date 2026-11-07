@@ -1,0 +1,1534 @@
+/* Gesture controls: activity first, useful actions and visual learning. */
+.gesture-settings,
+.gesture-workspace {
+  --g-surface: var(--bg-elevated, #121b25);
+  --g-bg: var(--bg-base, #0b121a);
+  --g-text: var(--text-pri, #e7edf3);
+  --g-muted: var(--text-sec, #9baab9);
+  --g-border: var(--border, rgba(160, 180, 200, 0.17));
+  color: var(--g-text);
+  font: 13px/1.5 var(--body, Inter, sans-serif);
+  box-sizing: border-box;
+  min-width: 0;
+}
+.gesture-settings {
+  container-type: inline-size;
+  width: 100%;
+  max-width: 100%;
+}
+.gesture-settings *,
+.gesture-workspace * {
+  box-sizing: border-box;
+}
+.gesture-settings h3,
+.gesture-settings h4,
+.gesture-settings h5,
+.gesture-workspace h4 {
+  color: var(--g-text);
+  margin: 0;
+  line-height: 1.25;
+}
+.gesture-settings h3 {
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -0.035em;
+}
+.gesture-settings h4,
+.gesture-workspace h4 {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+.gesture-settings p,
+.gesture-workspace p {
+  margin: 0;
+}
+.gesture-settings button,
+.gesture-workspace button {
+  font: inherit;
+  color: inherit;
+  background: var(--g-surface);
+  border: 1px solid var(--g-border);
+  border-radius: 10px;
+  min-height: 40px;
+  padding: 9px 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  cursor: pointer;
+  line-height: 1.35;
+  transition:
+    border-color 0.15s,
+    background 0.15s;
+  max-width: 100%;
+}
+.gesture-settings button svg,
+.gesture-workspace button svg {
+  flex-shrink: 0;
+}
+.gesture-settings button:hover:not(:disabled),
+.gesture-workspace button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--g-border));
+  background: color-mix(in srgb, var(--accent) 7%, var(--g-surface));
+}
+.gesture-settings :focus-visible,
+.gesture-workspace :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.gesture-settings :disabled,
+.gesture-workspace :disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.gesture-settings .gesture-primary,
+.gesture-workspace .gesture-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--g-bg);
+  font-weight: 650;
+}
+.gesture-settings .gesture-primary:hover:not(:disabled),
+.gesture-workspace .gesture-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 85%, white);
+}
+.gesture-settings .gesture-stop,
+.gesture-workspace .gesture-stop {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--g-border));
+}
+.gesture-settings .gesture-link {
+  padding: 4px 0;
+  min-height: 32px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--accent);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.gesture-settings .gesture-guide-entry {
+  display: flex; width: 100%; gap: 12px; padding: 12px 14px;
+  margin-bottom: 17px; text-align: left; background: transparent;
+}
+.gesture-guide-entry > svg { color: var(--accent); }
+.gesture-guide-entry > span { flex: 1; min-width: 0; }
+.gesture-guide-entry strong { display: block; font-size: 12px; }
+.gesture-guide-entry small { display: block; margin-top: 4px; color: var(--g-muted); font-size: 11px; }
+.gesture-guide > .gesture-muted { margin-top: 10px; font-size: 12px; }
+.gesture-guide-steps { list-style: none; margin: 22px 0; padding: 0; }
+.gesture-guide-steps > li { display: flex; gap: 13px; padding: 17px 0; border-top: 1px solid var(--g-border); }
+.gesture-guide-number {
+  display: grid; place-items: center; flex: 0 0 28px; height: 28px;
+  border: 1px solid var(--g-border); border-radius: 50%; color: var(--accent); font-size: 12px;
+}
+.gesture-guide h5 { font-size: 14px; font-weight: 600; }
+.gesture-guide-steps p, .gesture-guide-custom p { font-size: 12px; color: var(--g-muted); margin-top: 8px; line-height: 1.7; }
+.gesture-guide-steps button, .gesture-guide-custom button { margin-top: 12px; font-size: 12px; min-height: 44px; }
+.gesture-guide-steps > li > div { min-width: 0; flex: 1; }
+.gesture-guide-mapping { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 0 0; font-size: 12px; }
+.gesture-guide-mapping > svg { color: var(--accent); }
+.gesture-guide-mapping strong { font-weight: 500; }
+.gesture-guide-custom { display: flex; gap: 12px; padding: 17px; border: 1px solid var(--g-border); border-radius: 12px; background: var(--g-surface); }
+.gesture-guide-custom > svg { color: var(--accent); flex-shrink: 0; }
+.gesture-guide-custom > div { min-width: 0; }
+.gesture-guide-stop { display: flex; align-items: flex-start; gap: 8px; padding-top: 16px; font-size: 11px; }
+.gesture-guide-stop svg { flex-shrink: 0; color: var(--accent); }
+.gesture-calibration { display: flex; flex-direction: column; gap: 10px; padding: 12px; background: var(--g-surface); border-radius: 8px; }
+.gesture-calibration strong { font-size: 12px; font-weight: 500; }
+.gesture-calibration progress { width: 100%; accent-color: var(--accent); height: 6px; }
+.gesture-settings input,
+.gesture-settings textarea,
+.gesture-settings select {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  color: var(--g-text);
+  background: var(--g-bg);
+  border: 1px solid var(--g-border);
+  border-radius: 9px;
+  padding: 10px 12px;
+  font: inherit;
+  line-height: 1.5;
+}
+.gesture-settings textarea {
+  resize: vertical;
+}
+.gesture-settings select option {
+  background: var(--g-bg);
+  color: var(--g-text);
+}
+.gesture-settings label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.gesture-settings input[type="range"] {
+  accent-color: var(--accent);
+  padding: 0;
+  height: 30px;
+  border: 0;
+}
+.gesture-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin: 4px 0 23px;
+}
+.gesture-header p {
+  color: var(--g-muted);
+  font-size: 13px;
+  margin-top: 8px;
+  max-width: 370px;
+}
+.gesture-kicker {
+  display: block;
+  color: var(--g-muted);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  margin-bottom: 7px;
+}
+.gesture-status-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  color: var(--g-muted);
+  font-size: 10px;
+  padding-top: 2px;
+}
+.gesture-status-dot:before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.6;
+}
+.gesture-status-dot.is-on {
+  color: var(--accent);
+}
+.gesture-activities {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 7px;
+}
+.gesture-activities button {
+  flex-direction: column;
+  gap: 7px;
+  min-height: 78px;
+  padding: 12px 4px 10px;
+  position: relative;
+  color: var(--g-muted);
+  font-size: 12px;
+  background: transparent;
+}
+.gesture-activities button[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 9%, var(--g-surface));
+  border-color: color-mix(in srgb, var(--accent) 65%, var(--g-border));
+  color: var(--g-text);
+}
+.gesture-activities button[aria-pressed="true"] svg {
+  color: var(--accent);
+}
+.gesture-activities i {
+  position: absolute;
+  height: 3px;
+  width: 18px;
+  border-radius: 2px;
+  bottom: 0;
+  background: var(--accent);
+}
+.gesture-activity-caption {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin: 9px 0 17px;
+  color: var(--g-muted);
+  font-size: 11px;
+}
+.gesture-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 20px;
+  padding: 11px 0;
+  border-top: 1px solid var(--g-border);
+  border-bottom: 1px solid var(--g-border);
+}
+.gesture-tabs {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.gesture-tabs button {
+  border: 0;
+  background: transparent;
+  color: var(--g-muted);
+  padding: 8px 10px;
+  min-height: 44px;
+  font-size: 12px;
+}
+.gesture-tabs button[aria-selected="true"] {
+  color: var(--g-text);
+  background: var(--g-surface);
+  box-shadow: inset 0 0 0 1px var(--g-border);
+}
+.gesture-tabs button[aria-selected="true"] svg {
+  color: var(--accent);
+}
+.gesture-session-buttons {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.gesture-session-buttons button {
+  font-size: 11px;
+  min-height: 44px;
+  padding: 8px 10px;
+}
+.gesture-notice {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 12px 14px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--g-surface));
+  color: var(--g-muted);
+  margin-bottom: 16px !important;
+  font-size: 12px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 65%, transparent);
+}
+.gesture-control-layout {
+  display: grid;
+  grid-template-columns: minmax(200px, 1fr) minmax(230px, 1.1fr);
+  gap: 20px;
+  align-items: start;
+}
+.gesture-control-content {
+  padding: 4px 0;
+  min-width: 0;
+}
+.gesture-control-content > .gesture-section-title {
+  margin-bottom: 15px;
+}
+.gesture-control-content > .gesture-section-title > svg {
+  color: var(--g-muted);
+}
+.gesture-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.gesture-section-title > span {
+  text-align: right;
+  font-size: 10px;
+  max-width: 180px;
+}
+.gesture-muted {
+  color: var(--g-muted);
+  font-size: 11px;
+}
+.gesture-camera {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4/3;
+  overflow: hidden;
+  border: 1px solid var(--g-border);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--accent) 2%, var(--g-bg));
+}
+.gesture-camera video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.gesture-camera__placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+  height: 100%;
+  padding: 24px 18px 13px;
+  text-align: center;
+}
+.gesture-camera__placeholder .gesture-glyph {
+  color: color-mix(in srgb, var(--accent) 65%, var(--g-muted));
+  width: 76px;
+  height: 76px;
+  margin-bottom: 2px;
+}
+.gesture-camera__placeholder strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.gesture-camera__placeholder span {
+  color: var(--g-muted);
+  font-size: 10px;
+  max-width: 235px;
+}
+.gesture-camera__badge {
+  position: absolute;
+  left: 10px;
+  top: 9px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+  color: var(--g-muted);
+  padding: 3px 7px;
+  background: var(--g-bg);
+  border-radius: 5px;
+}
+.gesture-camera__badge > span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--g-muted);
+}
+.gesture-camera__badge > span.is-live {
+  background: var(--accent);
+}
+.gesture-camera__framing {
+  position: absolute;
+  inset: 25% 25% 10%;
+  border: 1px dashed rgba(255, 255, 255, 0.38);
+  border-radius: 32% 32% 18% 18%;
+  pointer-events: none;
+}
+.gesture-feedback {
+  margin-top: 10px;
+  padding: 0 2px;
+}
+.gesture-feedback__heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  font-size: 11px;
+}
+.gesture-feedback__heading strong {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-weight: 500;
+}
+.gesture-feedback__heading svg {
+  color: var(--accent);
+}
+.gesture-feedback__heading small {
+  color: var(--g-muted);
+  font-size: 10px;
+}
+.gesture-feedback__track {
+  height: 3px;
+  background: var(--g-border);
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 8px 0 6px;
+}
+.gesture-feedback__track > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.1s linear;
+  border-radius: inherit;
+}
+.gesture-feedback p {
+  color: var(--g-muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.gesture-result {
+  font-size: 11px;
+  color: var(--g-muted);
+  padding: 9px 1px 0;
+  overflow-wrap: anywhere;
+}
+.gesture-activity-hint {
+  color: var(--g-muted);
+  font-size: 12px;
+  margin-bottom: 14px !important;
+}
+.gesture-quick {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+.gesture-quick button {
+  flex-direction: column;
+  gap: 6px;
+  min-height: 63px;
+  padding: 9px 3px;
+  font-size: 10px;
+  text-align: center;
+}
+.gesture-quick button.gesture-quick__main {
+  background: color-mix(in srgb, var(--accent) 10%, var(--g-surface));
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--g-border));
+}
+.gesture-quick__main svg {
+  color: var(--accent);
+}
+.gesture-quick button:only-child {
+  grid-column: 1/-1;
+  flex-direction: row;
+  min-height: 44px;
+  font-size: 13px;
+}
+.gesture-touch-hint {
+  margin-top: 9px !important;
+  font-size: 10px;
+}
+.gesture-connection {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px;
+  background: var(--g-surface);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  font-size: 11px;
+  color: var(--g-muted);
+}
+.gesture-connection > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--accent);
+}
+.gesture-connection button {
+  border: 0;
+  background: none;
+  padding: 5px 0 0;
+  min-height: 30px;
+  font-size: 11px;
+  color: var(--accent);
+}
+.gesture-content {
+  margin-bottom: 12px;
+}
+.gesture-content .gesture-section-title {
+  font-size: 11px;
+  margin-bottom: 9px;
+}
+.gesture-content .gesture-section-title span {
+  font-size: 10px;
+}
+.gesture-reader {
+  white-space: pre-wrap;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  max-height: 260px;
+  padding: 14px;
+  background: var(--g-surface);
+  border: 1px solid var(--g-border);
+  border-radius: 9px;
+  font-size: 14px;
+  line-height: 1.8;
+}
+.gesture-step {
+  font-size: 21px;
+  line-height: 1.5;
+  padding: 8px 0 14px;
+  overflow-wrap: anywhere;
+}
+.gesture-content progress {
+  width: 100%;
+  height: 4px;
+  accent-color: var(--accent);
+}
+.gesture-source {
+  border-top: 1px solid var(--g-border);
+  padding-top: 12px;
+  margin-top: 13px;
+  font-size: 12px;
+}
+.gesture-source summary,
+.gesture-history summary {
+  cursor: pointer;
+  color: var(--g-muted);
+  font-size: 11px;
+  padding-bottom: 10px;
+}
+.gesture-source label {
+  margin-bottom: 12px;
+}
+.gesture-source ul {
+  color: var(--g-muted);
+  padding-left: 20px;
+}
+.gesture-source li {
+  margin-bottom: 7px;
+}
+.gesture-cards-section {
+  margin-top: 26px;
+}
+.gesture-cards-section > .gesture-section-title {
+  margin-bottom: 15px;
+}
+.gesture-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.gesture-card {
+  background: var(--g-surface);
+  border: 1px solid var(--g-border);
+  border-radius: 12px;
+  padding: 17px 13px 10px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  transition: border-color 0.2s;
+}
+.gesture-card.is-detected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.gesture-card.is-unassigned {
+  background: transparent;
+}
+.gesture-card__image {
+  color: var(--accent);
+  margin-bottom: 10px;
+  position: relative;
+  width: fit-content;
+}
+.gesture-card__learned {
+  display: grid;
+  place-items: center;
+  position: absolute;
+  right: -3px;
+  bottom: 5px;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--g-bg);
+  border: 2px solid var(--g-surface);
+}
+.gesture-card h5 {
+  font-size: 12px;
+  margin-bottom: 5px;
+  font-weight: 500;
+  color: var(--g-muted);
+}
+.gesture-card__action {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.4;
+  margin-bottom: 9px;
+  overflow-wrap: anywhere;
+}
+.gesture-card p {
+  color: var(--g-muted);
+  font-size: 10px;
+  line-height: 1.6;
+  flex: 1;
+}
+.gesture-card__buttons {
+  display: flex;
+  gap: 5px;
+  margin-top: 14px;
+  border-top: 1px solid var(--g-border);
+  padding-top: 5px;
+}
+.gesture-card__buttons button {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  padding: 6px 1px;
+  font-size: 10px;
+  min-height: 36px;
+  gap: 4px;
+}
+.gesture-card__buttons button:first-child {
+  color: var(--accent);
+}
+.gesture-settings .gesture-add-card {
+  background: transparent;
+  border-style: dashed;
+  color: var(--g-muted);
+  flex-direction: column;
+  min-height: 150px;
+  gap: 8px;
+  padding: 20px;
+}
+.gesture-add-card strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.gesture-add-card span {
+  font-size: 10px;
+}
+.gesture-editor {
+  padding: 20px;
+  margin-top: 18px;
+  background: var(--g-surface);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--g-border));
+  border-radius: 12px;
+}
+.gesture-editor > p {
+  margin: 10px 0 15px;
+}
+.gesture-editor .gesture-section-title > button {
+  padding: 3px;
+  min-height: 30px;
+  width: 30px;
+  border: 0;
+  background: transparent;
+}
+.gesture-action-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.gesture-action-options button {
+  padding: 8px 11px;
+  font-size: 11px;
+  background: var(--g-bg);
+}
+.gesture-action-options button[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--g-bg));
+}
+.gesture-editor .gesture-link {
+  margin: 8px 0;
+}
+.gesture-other-actions > input {
+  margin-bottom: 10px;
+}
+.gesture-other-actions .gesture-action-options {
+  max-height: 200px;
+  overflow-y: auto;
+}
+.gesture-editor__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid var(--g-border);
+  margin-top: 15px;
+  padding-top: 15px;
+}
+.gesture-bookmark {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 6px;
+}
+.gesture-bookmark > button:first-child {
+  flex: 1;
+  text-align: left;
+  justify-content: flex-start;
+  font-size: 11px;
+  overflow: hidden;
+}
+.gesture-teach {
+  margin-top: 18px;
+  border: 1px solid var(--g-border);
+  border-radius: 12px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.gesture-teach p,
+.gesture-teach small {
+  color: var(--g-muted);
+  font-size: 11px;
+  margin-top: 6px;
+}
+.gesture-learning > .gesture-section-title {
+  margin: 8px 0 16px;
+}
+.gesture-learn-count {
+  white-space: nowrap;
+  color: var(--g-muted);
+  font-size: 11px;
+}
+.gesture-learn-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+.gesture-learn-picker button {
+  font-size: 11px;
+  min-height: 33px;
+  padding: 6px 10px;
+  background: transparent;
+}
+.gesture-learn-picker button[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.gesture-learn-stage {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  align-items: center;
+  padding: 22px;
+  border: 1px solid var(--g-border);
+  border-radius: 15px;
+  background: color-mix(in srgb, var(--accent) 2%, var(--g-bg));
+}
+.gesture-learn-stage.is-success {
+  border-color: var(--accent);
+}
+.gesture-learn-target {
+  text-align: center;
+}
+.gesture-learn-target .gesture-glyph {
+  color: var(--accent);
+  display: block;
+  margin: 8px auto 16px;
+}
+.gesture-learn-target h4 {
+  font-size: 20px;
+  margin-bottom: 12px;
+}
+.gesture-learn-target p {
+  color: var(--g-muted);
+  font-size: 12px;
+  max-width: 250px;
+  margin: 0 auto;
+}
+.gesture-learn-does {
+  display: block;
+  font-size: 10px;
+  color: var(--g-muted);
+  border-top: 1px solid var(--g-border);
+  padding-top: 13px;
+  margin: 16px 0 0;
+}
+.gesture-learn-stage .gesture-camera {
+  aspect-ratio: 1;
+}
+.gesture-learn-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 15px;
+  padding-top: 17px;
+}
+.gesture-learn-footer > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--g-muted);
+  font-size: 10px;
+}
+.gesture-learn-footer > div {
+  display: flex;
+  gap: 7px;
+}
+.gesture-learn-footer button {
+  font-size: 11px;
+}
+.gesture-presets {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+  margin: 18px 0 22px;
+}
+.gesture-presets button {
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  gap: 7px;
+  padding: 16px;
+  min-height: 154px;
+}
+.gesture-presets button > svg {
+  color: var(--g-muted);
+  margin-bottom: 4px;
+}
+.gesture-presets button strong {
+  font-size: 13px;
+}
+.gesture-presets button span {
+  color: var(--g-muted);
+  font-size: 10px;
+  flex: 1;
+}
+.gesture-presets button small {
+  color: var(--g-muted);
+  font-size: 10px;
+}
+.gesture-presets button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--g-surface));
+}
+.gesture-presets button[aria-pressed="true"] > svg {
+  color: var(--accent);
+}
+.gesture-camera-settings {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  margin-bottom: 18px;
+}
+.gesture-camera-settings label {
+  flex: 1;
+}
+.gesture-camera-settings button {
+  font-size: 11px;
+}
+.gesture-settings label.gesture-check {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  margin: 17px 0;
+  gap: 9px;
+  font-size: 12px;
+}
+.gesture-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+.gesture-reset {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin: 22px 0;
+  border-top: 1px solid var(--g-border);
+  padding-top: 20px;
+}
+.gesture-reset strong {
+  font-size: 12px;
+}
+.gesture-reset p {
+  color: var(--g-muted);
+  font-size: 11px;
+  margin-top: 5px;
+  max-width: 285px;
+}
+.gesture-reset button {
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.gesture-history {
+  border-top: 1px solid var(--g-border);
+  margin-top: 20px;
+  padding-top: 13px;
+}
+.gesture-history summary span {
+  margin-left: 6px;
+}
+.gesture-history ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.gesture-history li {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border-bottom: 1px solid var(--g-border);
+  padding: 11px 0;
+  font-size: 11px;
+}
+.gesture-history li > svg {
+  margin-top: 3px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.gesture-history li[data-state="failed"] > svg {
+  color: var(--g-muted);
+}
+.gesture-history li > div {
+  flex: 1;
+}
+.gesture-history li strong {
+  font-weight: 500;
+}
+.gesture-history li p,
+.gesture-history li small {
+  font-size: 10px;
+  color: var(--g-muted);
+}
+.gesture-safety {
+  border-top: 1px solid var(--g-border);
+  padding-top: 18px;
+  margin-top: 25px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.gesture-safety > svg {
+  color: var(--g-muted);
+  flex-shrink: 0;
+}
+.gesture-safety > div {
+  flex: 1;
+}
+.gesture-safety strong {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+}
+.gesture-safety span {
+  display: block;
+  color: var(--g-muted);
+  font-size: 9px;
+  margin-top: 3px;
+}
+.gesture-safety .gesture-local {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 110px;
+  line-height: 1.5;
+}
+.gesture-workspace {
+  position: fixed;
+  bottom: 18px;
+  right: 18px;
+  width: min(355px, calc(100vw - 24px));
+  max-height: min(600px, calc(100dvh - 30px));
+  overflow-y: auto;
+  z-index: 75;
+  background: var(--g-bg);
+  border: 1px solid var(--g-border);
+  border-radius: 13px;
+  box-shadow: 0 12px 45px rgba(0, 0, 0, 0.3);
+}
+body:has(.gesture-settings) .gesture-workspace {
+  display: none;
+}
+.gesture-workspace__header {
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--g-border);
+}
+.gesture-workspace__header > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.gesture-workspace__header strong {
+  font-size: 12px;
+}
+.gesture-workspace__buttons {
+  display: flex;
+  gap: 4px;
+}
+.gesture-workspace__buttons button {
+  min-height: 33px;
+  padding: 7px;
+  font-size: 10px;
+}
+.gesture-workspace__body {
+  padding: 4px 13px 13px;
+}
+.gesture-workspace .gesture-feedback {
+  margin-bottom: 12px;
+}
+.gesture-workspace .gesture-quick {
+  gap: 6px;
+}
+.gesture-workspace .gesture-quick button {
+  min-height: 52px;
+  font-size: 9px;
+}
+.gesture-shortcuts {
+  padding: 0 !important;
+  list-style: none;
+}
+.gesture-shortcuts li {
+  display: flex;
+  justify-content: space-between;
+  gap: 9px;
+  font-size: 11px;
+  padding: 5px 0;
+}
+.gesture-shortcuts li span {
+  color: var(--g-muted);
+  text-align: right;
+}
+.gesture-workspace.is-minimized .gesture-workspace__header {
+  border: 0;
+}
+.gesture-cursor {
+  position: fixed;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 1000;
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.gesture-cursor.is-down {
+  background: var(--accent);
+  transform: translate(-50%, -50%) scale(0.75);
+}
+.gesture-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+@container (max-width: 560px) {
+  .gesture-settings button { min-height: 44px; }
+  .gesture-settings :is(input, select, textarea) { font-size: 16px; }
+  .gesture-header {
+    margin-bottom: 17px;
+  }
+  .gesture-header h3 {
+    font-size: 23px;
+  }
+  .gesture-header p {
+    font-size: 11px;
+  }
+  .gesture-activities {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .gesture-activities button {
+    min-height: 60px;
+    padding: 9px 3px;
+    gap: 4px;
+    font-size: 11px;
+    flex-direction: row;
+  }
+  .gesture-activities button > svg {
+    width: 17px;
+  }
+  .gesture-activity-caption {
+    align-items: flex-start;
+    font-size: 10px;
+    gap: 9px;
+  }
+  .gesture-toolbar {
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 9px 0;
+  }
+  .gesture-tabs {
+    flex: 1 0 100%;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    min-width: 0;
+  }
+  .gesture-tabs button { min-width: 0; padding: 8px 4px; gap: 4px; font-size: 11px; }
+  .gesture-guide-custom { padding: 13px; gap: 8px; }
+  .gesture-guide-steps > li { gap: 9px; }
+  .gesture-session-buttons {
+    flex: 1;
+    justify-content: flex-end;
+  }
+  .gesture-session-buttons:has(.gesture-pause) {
+    flex-basis: 100%;
+  }
+  .gesture-session-buttons:has(.gesture-pause) button {
+    flex: 1;
+  }
+  .gesture-control-layout {
+    grid-template-columns: 1fr;
+    gap: 19px;
+  }
+  .gesture-control-content { order: -1; }
+  .gesture-camera {
+    aspect-ratio: 2.05;
+  }
+  .gesture-camera__placeholder .gesture-glyph {
+    width: 55px;
+    height: 55px;
+  }
+  .gesture-camera__placeholder {
+    padding-top: 23px;
+    gap: 3px;
+  }
+  .gesture-control-content > .gesture-section-title {
+    margin-bottom: 11px;
+  }
+  .gesture-quick button {
+    min-height: 55px;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 5px;
+    font-size: 10px;
+  }
+  .gesture-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .gesture-card {
+    padding: 13px 11px 7px;
+  }
+  .gesture-card__action {
+    font-size: 14px;
+  }
+  .gesture-card__image {
+    margin-bottom: 7px;
+  }
+  .gesture-card__image > svg {
+    width: 60px;
+    height: 60px;
+  }
+  .gesture-cards-section {
+    margin-top: 22px;
+  }
+  .gesture-cards-section .gesture-section-title > span {
+    max-width: 110px;
+  }
+  .gesture-learn-stage {
+    padding: 18px 14px;
+    gap: 17px;
+    grid-template-columns: 1fr;
+  }
+  .gesture-learn-target .gesture-glyph {
+    width: 112px;
+    height: 112px;
+    margin: 6px auto 13px;
+  }
+  .gesture-learn-target p {
+    max-width: 290px;
+  }
+  .gesture-learn-target h4 {
+    font-size: 20px;
+  }
+  .gesture-learn-stage .gesture-camera {
+    aspect-ratio: 2.05;
+  }
+  .gesture-learn-does {
+    padding-top: 10px;
+    margin-top: 12px;
+  }
+  .gesture-learn-footer {
+    justify-content: center;
+  }
+  .gesture-learn-footer > div {
+    width: 100%;
+  }
+  .gesture-learn-footer button {
+    flex: 1;
+  }
+  .gesture-presets {
+    gap: 6px;
+  }
+  .gesture-presets button {
+    padding: 12px 9px;
+    min-height: 150px;
+  }
+  .gesture-presets button strong {
+    font-size: 12px;
+  }
+  .gesture-presets button span {
+    font-size: 9px;
+  }
+  .gesture-reset {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .gesture-camera-settings {
+    flex-wrap: wrap;
+  }
+  .gesture-camera-settings label {
+    flex-basis: 100%;
+  }
+  .gesture-safety .gesture-local {
+    display: none;
+  }
+}
+@media (max-width: 600px) {
+  .gesture-workspace {
+    right: 12px;
+    bottom: 12px;
+  }
+  .gesture-workspace[data-native="true"] {
+    bottom: 140px;
+    max-height: calc(100dvh - 160px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gesture-settings *,
+  .gesture-workspace * {
+    transition: none !important;
+  }
+}
+@media (pointer: coarse) {
+  .gesture-settings button { min-height: 44px; }
+  .gesture-settings :is(input, select, textarea) { font-size: 16px; }
+}
+/* Keep the hand and camera in view while learning, instead of repeating setup chrome. */
+.gesture-settings.is-focused .gesture-header {
+  margin: 0 0 8px;
+  align-items: center;
+}
+.gesture-settings.is-focused .gesture-header > div > .gesture-kicker {
+  display: none;
+}
+.gesture-settings.is-focused .gesture-header h3 {
+  font-size: 21px;
+}
+.gesture-settings.is-focused .gesture-activity-caption {
+  margin-bottom: 9px;
+}
+.gesture-settings.is-focused .gesture-toolbar {
+  margin-bottom: 15px;
+}
+.gesture-settings.is-focused .gesture-learning > .gesture-section-title .gesture-kicker {
+  display: none;
+}
+.gesture-settings.is-focused .gesture-learn-stage {
+  padding: 18px;
+}
+.gesture-settings.is-focused .gesture-learn-target > .gesture-glyph {
+  width: 112px;
+  height: 112px;
+  margin: 6px auto 12px;
+}
+.gesture-settings.is-focused .gesture-learn-stage .gesture-camera {
+  aspect-ratio: 1.2;
+}
+@container (max-width:560px) {
+  .gesture-settings.is-focused .gesture-learn-stage .gesture-camera {
+    aspect-ratio: 2.05;
+  }
+}
+
+/* Daily activities share one engine with Settings; only this view owns focus. */
+.hands-free-scrim {
+  position: fixed;
+  inset: 0;
+  background: #02060bcc;
+  z-index: 119;
+}
+.hands-free {
+  position: fixed;
+  z-index: 120;
+  inset: 16px;
+  margin: auto;
+  width: min(920px, calc(100% - 32px));
+  height: min(880px, calc(100dvh - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+  background: var(--bg-surface, #111820);
+  color: var(--text-pri, #eef5fb);
+  border: 1px solid var(--border, #647687);
+  border-radius: 16px;
+  box-shadow: 0 20px 80px #0008;
+  font-size: 15px;
+  line-height: 1.55;
+  box-sizing: border-box;
+  min-width: 0;
+}
+.hands-free > p {
+  margin: 0;
+}
+.hands-free h2 {
+  margin: 0;
+  font-size: 22px;
+}
+.hands-free-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 3px;
+}
+.hands-free-header {
+  justify-content: space-between;
+}
+.hands-free :is(button, input, textarea, select),
+.gesture-workspace button {
+  border: 1px solid #647687;
+  border-radius: 8px;
+  padding: 9px 12px;
+  background: var(--bg-base, #14212d);
+  color: inherit;
+  font: inherit;
+  max-width: 100%;
+}
+.hands-free button {
+  cursor: pointer;
+  min-height: 42px;
+}
+.hands-free button[aria-pressed="true"] {
+  border-color: var(--accent, #77efff);
+  background: color-mix(in srgb, var(--accent, #77efff) 15%, #111820);
+}
+.hands-free button:disabled,
+.gesture-workspace button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.hands-free
+  :is(button, input, textarea, select, summary, [tabindex]):focus-visible,
+.gesture-workspace :is(button, [tabindex]):focus-visible {
+  outline: 3px solid var(--accent, #77efff);
+  outline-offset: 3px;
+}
+.hands-free label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+  min-width: 0;
+}
+.hands-free :is(textarea, select) {
+  width: 100%;
+  box-sizing: border-box;
+}
+.hands-free small,
+.gesture-workspace small {
+  color: #bbc7d1;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.activity-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-block: 8px;
+  min-width: 0;
+}
+.activity-bar > label {
+  flex: 1 1 180px;
+}
+.activity-content {
+  margin-top: 16px;
+}
+.activity-content details {
+  padding-block: 10px;
+}
+.hands-free summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 5px;
+}
+.activity-page {
+  min-height: 100px;
+  max-height: 35vh;
+  border-block: 1px solid #536779;
+  margin-block: 12px;
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+.activity-camera {
+  padding: 10px;
+  border: 1px solid #536779;
+  border-radius: 10px;
+}
+.activity-camera video {
+  max-height: 160px;
+}
+.activity-timers:empty {
+  display: none;
+}
+.activity-timer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  margin-block: 10px;
+  border: 1px solid #647687;
+  border-radius: 8px;
+}
+.activity-timer > span {
+  flex: 1 1 180px;
+  overflow-wrap: anywhere;
+}
+.activity-timer strong {
+  font-variant-numeric: tabular-nums;
+}
+.activity-timer.is-finished {
+  border-color: var(--accent, #77efff);
+}
+.activity-announcement:empty {
+  display: none;
+}
+.activity-bookmarks {
+  border: 1px solid #647687;
+  border-radius: 10px;
+  padding: 10px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.activity-bookmark {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  margin-bottom: 12px;
+}
+.activity-bookmark button {
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.activity-mappings {
+  margin-top: 18px;
+}
+.pose-guide {
+  display: flex;
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid #536779;
+}
+.pose-guide p {
+  margin: 5px 0;
+}
+.pose-drawing {
+  flex: 0 0 72px;
+  width: 72px;
+  height: 90px;
+  color: var(--accent, #77efff);
+}
+.pose-drawing.is-down {
+  transform: rotate(180deg);
+}
+.pose-action {
+  color: var(--accent, #77efff);
+}
+.gesture-help {
+  padding-left: 20px;
+  line-height: 1.7;
+}
+.gesture-settings p {
+  opacity: 1;
+  font-size: 14px;
+}
+.gesture-workspace {
+  max-height: calc(100dvh - 100px);
+  overflow-y: auto;
+}
+@media (max-width: 600px) {
+  .hands-free {
+    inset: 6px;
+    width: calc(100% - 12px);
+    height: calc(100dvh - 12px);
+    padding: 12px;
+    gap: 8px;
+  }
+  .hands-free :is(input, textarea, select) {
+    font-size: 16px;
+  }
+  .activity-page {
+    font-size: 17px;
+  }
+}

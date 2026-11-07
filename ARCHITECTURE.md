@@ -1,0 +1,1084 @@
+# Architecture
+
+How the Android app is put together, and the rules that keep it from turning into a mess.
+For *what works right now* see [STATUS.md](STATUS.md); for the threat model see
+[SECURITY.md](SECURITY.md).
+
+---
+
+## The 30-second version
+
+```
+  React HUD (src/)                        ← what you see
+        │  useAssistant → useBrain
+  TypeScript brain (src/brain/)           ← the thinking: routing, tools, memory, operator
+        │  invoke("plugin:phone|…")
+  Rust shell (src-tauri/)                 ← the app process, desktop bits compiled out
+        │  run_mobile_plugin("…")
+  Kotlin plugin (tauri-plugin-phone/)     ← the phone: accessibility, wake word, Keystore,
+                                             task journal, TTS, calendar, files
+```
+
+Four layers, one path between each. Every rule below exists because adding a *second*
+path is the thing that breaks this app.
+
+---
+
+## 1. The brain lives in TypeScript, not Python
+
+On Windows the brain is a Python process the app talks to over a WebSocket. On Android
+that whole brain is ported to `jarvis-studio-gui/src/brain/` and called **directly from
+React**.
+
+The seam is `src/hooks/useAssistant.js`: it picks `useBrain` (in-app brain) on native Android and in this fork’s browser
+preview, or `useWebSocket` (Python backend) in a native desktop build, **once at module load**, and returns one
+stable hook. `utils/assistantRuntime.js` selects from runtime identity, never window
+width or touch hardware; `isMobileViewport.js` is only a layout helper. `useBrain.js` deliberately mirrors `useWebSocket`'s shape, so `App.jsx` and
+the HUD never learn which transport is behind them.
+
+`reference/python-backend-spec/` (local-only, gitignored — not in the public repo) is a
+read-only copy of the original Python backend: the blueprint to compare against, never
+edited, imported or shipped.
+
+### What's in the brain
+
+| Area | Files | Notes |
+|---|---|---|
+| Turn loop | `index.ts`, `loop.ts`, `ask.ts` | The observe→act orchestration ported from `main.py` |
+| Config | `config.ts`, `resolveConfig.ts`, `configSecrets.ts` | What provider/model we'd *like* to use; secrets live in the Keystore (see §5) |
+| Route ladder | `routes.ts`, `quota.ts`, `modelPolicy.ts`, `modelCatalog.ts`, `modelRanker.ts` | What we actually try, in what order (see §2) |
+| Providers | `providers/{gemini,groq,vertexAuth,models}.ts` | Ported from `llm/*_bridge.py` |
+| Tools | `tools/registry.ts`, `tools/dispatch.ts`, `tools/http.ts` | One advertisement point, one execution point (see §3) |
+| Phone operator | `operator/controller.ts` → **Kotlin** `OperatorCore.kt` / `NativeOperator.kt` | Drives other apps — the loop is native (see §4) |
+| Memory | `memory/store.ts`, `memory/vectorStore.ts`, `memory/proceduralLearning.ts` | Three separate stores — check which one a feature reads |
+| Remote PC | `remote/pc.ts`, `remote/webrtcScreen.ts` | Pair to the Windows app (see §6) |
+| TV | `remote/tv.ts` → **Kotlin** `TvAdb.kt` | The user's Android TV over network ADB (see §6a) |
+| Wake-on-LAN | `platform/index.ts` `wolSend` → **Kotlin** `WakeOnLan.kt` | Switches the TV (`wakeTv`) or the paired PC (`RemotePC.wake`, the `wake_pc` tool) on from off |
+| Native bridge | `platform/*.ts` | The JS side of the Kotlin plugin (see §5) |
+| Scheduling | `schedule/{store,reminderTime,routines}.ts` → **Kotlin** `RoutineAlarms.kt` for timed routines | Reminders, alarms, timers, routines (see §5) |
+
+---
+
+## 2. One answer can take several routes
+
+`resolveConfig.ts` decides the *preferred* provider and model. `routes.ts` decides what
+to try when that isn't available, and `quota.ts` remembers across turns which routes are
+already spent.
+
+Why it exists: free tiers run out. The old shape was one provider plus a single fallback,
+so a Groq 429 had exactly one place to go and then told the user to come back later. A
+user with two Groq keys and a Gemini key now has six routes.
+
+`quota.ts` reads Groq's `x-ratelimit-*` headers to know a route is spent *before* wasting
+a call on it, benches failed routes on an escalating ladder (2m → 10m → 1h → a day), and
+persists that state — a 24-hour bench the app forgets on relaunch is not a bench. A
+failure with no quota signal (timeout, 5xx) never touches that ladder: it gets its own
+short one, 20s → 2m → 10m for repeats within 30 minutes, reset by any success, so a slow
+route can't be quarantined for a day but also can't cost every turn its full timeout. It
+mirrors the desktop's `llm/quota.py`; keep the two in sync when either changes (the
+transient ladder, like the per-minute windows, exists only on the phone so far).
+
+`modelPolicy.ts` classifies a *request* as dumb / smart / very-smart (and a model id as
+image or not), which is what Auto mode uses to send greetings to a cheap model and real
+work to a good one.
+
+### Smart routing — `modelCatalog.ts` + `modelRanker.ts`
+
+Ported from the desktop (`llm/model_catalog.py`, `llm/model_ranker.py`, 2026-09-24);
+**keep the `KNOWN` tables identical**. Every model discovery (`providers/models.ts` for
+Vertex/Gemini/Groq, `providers/catalog.ts` for the pooled providers) feeds
+`recordDiscovered()`, which ranks every reachable (provider, model) by its Artificial
+Analysis Intelligence Index from the catalog table. Only models the table doesn't know
+are sent to a Google-Search-grounded Gemini call (`estimateUnknown()`) — **only when the
+user presses Re-rank**, never automatically, because it spends the Gemini quota chat and
+phone tasks share. Results are cached by normalized name; there is **no ungrounded fallback** (the desktop measured it producing
+garbage) — without a Gemini key an unknown model just gets a low guessed score. Tiers
+(fast / mid / flagship) come from rules, never the LLM.
+
+**Grounded calls use Gemini 2.5 Flash / Flash-Lite only** (`GROUNDING_MODELS` in
+`tools/http.ts`, shared by `web_search` and the estimate). Google Search grounding is
+"Not available" on the free tier for every 3.x model, and free on the 2.5 pair (500
+requests/day, shared) — pricing page, checked 2026-09-27. `web_search` walks both models ×
+every Gemini key, skipping routes `quota.ts` already has benched; it doesn't bench routes
+itself (a grounding limit isn't the chat quota). An optional Tavily key (Settings ▸ API
+keys ▸ Web search backup, Keystore name `tavilyKey`) is tried only when grounding can't
+answer — no Gemini key, every route failed, or an empty reply. Tavily is never a chat route.
+
+`routesFor()` maps the request class to a tier (dumb→fast, smart→mid, very-smart→flagship)
+and puts the ranked ladder first: that tier best-first, then stronger tiers, then weaker.
+Two filters apply: pooled free providers (OpenRouter/NVIDIA/Mistral) never enter the
+ranked part — they stay tail fallbacks — and nothing scoring below 3 is routed to.
+Under Auto the head is the first ranked model with an un-benched route. The old hardcoded
+Gemini/Groq picks stay as the tail, so nothing regresses before the first ranking or when
+a provider's listing never came back. A provider with no key is filtered out at routing
+time; removing a key re-runs discovery, which clears its models (`[]`), while a failed
+listing keeps them (`null`).
+
+**The user's provider + model choice scopes the ladder** (`BrainConfig.providerScope`,
+set in Settings ▸ Models; 2026-09-25). `providerScope` is `"auto"` or one keyed
+provider (pooled ones included — picking one is the user's call, and Settings warns).
+It is separate from `tier`, which stays the Google endpoint `GeminiProvider` talks to
+and the client for calls the ladder doesn't pick. Three cases:
+Auto/Auto → the whole ranking, and the fallback switch has nothing to pin;
+provider X + Auto → the best of X's ranked models for the turn, then (fallback on) the rest;
+a specific model → that model, then X's others, then the rest. With fallback off the
+ladder never leaves the chosen model / provider (keys still rotate). The Settings picker
+lists exactly `sysInfo.reachable_models` — the ranking's per-provider discovered models
+minus pooled ones that 404'd — grouped by provider; the old dumb/smart/very-smart
+grouping of the picker is gone (the *request* classifier above still drives tiers).
+
+**Tool support is only ever turned off by evidence:** a 400 during a tool turn that says
+tool/function calling is *not supported / not enabled* (`ask.ts` `rejectsTools`) calls
+`markNoTools()`, which survives re-ranking; tool turns then route past that model. The
+wording check matters: until 2026-09-25 any 400 that merely mentioned tools (a bad
+schema, a conversation-shape error) qualified, and it permanently benched Gemini
+3.6/3.5-flash — the two best tool models — from every action turn. The ranking store
+moved to `jarvis.ranking.v2` to drop those marks. The native operator sends no tools, so
+it asks `usableRoutes(cfg, "dumb", false)`.
+
+### Every pinned model id is a time bomb — `modelRemap.ts`
+
+Google retires Gemini ids on a schedule. This has now taken the app down **three** times:
+a dead Vertex default in 2026-07, then on **2026-09-22** both `gemini-2.0-flash` and
+`gemini-2.0-flash-lite` started returning 404 *"no longer available"*. The failure is
+nasty because it does not look like itself:
+
+```
+both Gemini ids 404  →  isFatalForRoute benches them for a DAY
+                     →  100% of traffic lands on Groq
+                     →  Groq blows its tokens-per-minute ceiling in ~60s
+                     →  the user sees "rate limits ran out" on a phone task
+```
+
+Three layers from the cause. Re-pinning a fresh constant only resets the timer, so:
+
+- **`errorClass.retiredModelReplacement()`** reads the replacement out of Google's own
+  404 (*"Please update your code to use models/gemini-3.6-flash"*).
+- **`ask.benchRoute()`** records it via **`modelRemap.recordRemap()`**.
+- **`routes.ts`'s `push()`** substitutes it — one chokepoint, so the constants, the
+  user's configured model and the Auto picks are all covered, and ids that now resolve
+  to the same live model collapse into one route.
+
+A future retirement therefore costs **one failed request, once**, instead of a day.
+This does not excuse stale constants — the remap only engages *after* a request has
+already failed — so when you notice an id has moved on, update it.
+
+### Per-minute limits are paced, not benched
+
+Free tiers bind on **per-minute** ceilings (Groq tokens-per-minute; Gemini requests-per-
+minute) that reset in seconds. `errorClass.limitWindow()` reads which window a 429 names;
+`quota.bench({window})` benches a minute-window 429 for exactly the provider's wait
+(2–65s) without touching the escalating ladder, which is kept for **day** windows. When
+every route is only briefly out, chat waits once (≤15s) and the native operator waits
+(≤65s, STOP-aware) — see `RoutePacer.kt`, which also skips a Groq route whose
+`x-ratelimit-remaining-tokens` can't fit the next step. Before 2026-09-23 a TPM 429 went
+on the day ladder and one burst of operator steps benched every route. OpenRouter's
+"temporarily rate-limited upstream" (its shared `:free` pool, not the user's quota) is
+treated as a minute window too, in both `errorClass.ts` and `RoutePacer.kt`.
+
+### Slow routes lose their turn (2026-09-26)
+
+Latency matters as much as quota: every phone command waits for a chat turn before its
+task starts, and one gemma-4-31b turn took 16.6s where the next route answers in ~2s.
+`ask.ts` logs each chat call (`[route] … answered (class) in Nms`) and `fastFirst()` moves a
+route whose recent average is over 8s behind the rest (remembered 10 minutes; quality order
+kept among the others; it still answers if they all fail). The native ladder does the same
+through hedging — a route that wins a hedge race is asked first from then on.
+
+### Gemini request details that cost a day each
+
+- **Turning thinking off is generation-specific** (measured on the device, 2026-09-25):
+  2.5 takes `thinkingBudget: 0` and 400s on `thinkingLevel`; 3.x 400s on budget 0 and
+  takes `thinkingLevel: "minimal"`. `providers/gemini.ts` `genConfig` and
+  `NativeOperator.kt` `thinkingOff` must agree. Getting it wrong killed every phone task
+  on its first request once the ranking put `gemini-3.5-flash-lite` first.
+- **A native 400 skips that route for the task** instead of ending it: native bodies are
+  built per model, so one model rejecting one says nothing about the next. (Chat still
+  treats a 400 as the caller's problem — it sends the same body to every route.)
+- **Keys go in the `x-goog-api-key` header**, never `?key=` — URLs end up in logs and
+  error strings. `ya29.` OAuth tokens still use `Authorization: Bearer`.
+
+### Pooled free providers
+
+OpenRouter, NVIDIA NIM and Mistral are OpenAI-compatible presets of one provider class
+(`providers/openaiCompat.ts`, which also hosts Groq). They only add **fallback** routes
+after Gemini/Groq, and only for models discovered from their live `/models` listings
+(`providers/catalog.ts`: OpenRouter `:free` + tool-capable, sized 20–150B) — never
+pinned ids, because OpenRouter's free catalog turns over within weeks. A listing is not
+a promise the key can call a model — both NVIDIA picks once 404'd "Function not found
+for account" — so the catalog keeps up to 8 ranked candidates and routes through the
+best two; a pooled route's 404 (`ask.benchRoute`, chat and native alike) marks that
+model dead for 7 days and the next candidate takes its place. Groq limits are
+per *organization*, so more Groq keys from one account add nothing; more Gemini keys
+only help from different Cloud projects.
+
+**An empty 200 is a failure, not an answer.** OpenRouter reports upstream failures as
+HTTP 200 with an in-body `error` and no content. Both ladders (`OpenAICompatProvider.chat`
+and the native `HttpLadderModel`) turn a reply with no text and no tool calls into a
+retryable 502, so the route is benched briefly and the next one is tried.
+
+> Keeping them current is easy: `providers/models.ts` `discoverModels()` already asks
+> each provider what the user's key can actually serve, and Settings shows that list.
+
+---
+
+## 3. Tools: one advertisement point, one execution point
+
+- `tools/registry.ts` decides **which tools the model is told about**. It is
+  *tier-aware* — `capabilitiesFor()` returns a different palette per active provider, so
+  a weak key doesn't get offered tools it can't drive.
+- `tools/dispatch.ts` is **the only place a tool actually runs**. A tool call lowers to
+  one action-spec and then hits this one dispatcher.
+
+**Never add a second execution path.** This mirrors `live_tools.to_spec` feeding
+`actions.run_action` in the Python brain, and it's the reason a tool's behaviour is the
+same however the model asked for it.
+
+> Note: the Python brain also accepted text `[ACTION]` tags as a second entry point.
+> **This fork has no `[ACTION]` parser** — native function calling is the only path in.
+> Some comments still mention it; they are stale, not a description of live code.
+
+### The advertised palette and the implementation must agree
+
+`registry.ts` advertises an `enum` of argument values; the code behind the tool branches
+on its own names. Nothing checks that those two lists overlap, and when they drift the
+tool doesn't error — it silently answers "I didn't understand that" to every call, or
+does something unrelated. Two real cases, both found only by reading:
+
+- `customize_screen` advertised ten actions (`set_theme`, `show_panel`, …) while
+  `applyScreenAction` branched on seven different names (`accent`, `show`, …). **Zero**
+  overlap: the whole HUD-customisation tool was dead.
+- `system_control` advertised `play_pause`/`next`/`previous` with no media-key handling
+  anywhere in Kotlin or Rust, so those calls fell through to opening the Settings app and
+  reported success.
+
+So: **when you add a value to an advertised enum, add the branch that handles it in the
+same change, and don't advertise a capability the device doesn't have.** A colocated test
+that walks the palette and asserts every advertised action is accepted is the cheap guard
+— `brain/mobile/screenConfig.test.ts` does exactly that.
+
+### A turn advertises part of the palette (2026-10-19)
+
+Every declaration is input tokens on every call, resent on each tool round: the whole
+palette is ~16k characters (~4k tokens), against free-tier per-minute token caps.
+`turnPalette()` sends **core** (every tool no group lists: the one-step phone actions,
+`phone_task`, `pc_task`, `tv_control`, web search, timers…) plus the `TOOL_GROUPS` whose
+cue words the request contains or that the last two turns called; `load_tools` brings in
+any other group. It is handled inside `runTurn` (it changes the palette for the rest of
+the turn and dispatches nothing), and a round spent only on it is free, once. A group's
+tools still go through `toSpec` → `dispatch` like any other: this decides what is
+*advertised*, never how a call runs. The desktop does the same in `live_tools.py`.
+
+Conversation completion review (2026-10-24) uses a second model only for complex
+objectives or multiple executed tools. A single tool's verified receipt determines
+simple-task status; native phone verification and action approvals are unchanged.
+Local weather questions return the weather tool's complete answer directly through
+the existing dispatcher/journal/memory path, avoiding two redundant model calls.
+Complex review accepts a whole fenced JSON object, retries malformed JSON once,
+and receives the actual final answer alongside action evidence. See
+[Agent workflow contracts](AGENT_WORKFLOWS.md).
+
+Plain local notification reads also go directly through dispatch to the existing
+permission-checked native reader. The formatted, code-redacted result is saved and
+displayed without a model call; a fallback model had repeatedly answered without
+executing the reader. Filtered, compound and restricted remote requests keep normal
+tool routing and scopes. Automatic model-switch notices are diagnostic logs on Android,
+not recurring warning popups; real runtime/access failures still use the warning UI.
+
+Roughly what's dispatched today: `weather`, `news`, `search_web`, `places`, `directions`,
+`set_location`, `reminder`, `schedule`, `agenda`, `clock`, `time`, `day`, `remember`,
+`forget`, `playbook`, `routine`, `qr_code`, `generate_image`, `record`, `clipboard`,
+`read_file`, `list_dir`, `open_file`, `open_url`, `open_app`, `close_app`, `set_volume`,
+`system`, `power`, `screen`, `ui`, `screenshot`, `open_a11y_settings`, the one-step phone
+actions (`device`, `navigate`, `play_media`, `message`, `call`, `notifications` — below),
+plus the two big ones: `phone_task` (§4) and `pc_task` (§6).
+
+### A turn can be limited to some tools (2026-10-21)
+
+A request that didn't come from the user at the phone — one the paired PC sends
+(`phone.command`, §6) or a WhatsApp command (`WhatsAppInbox.kt`, §6) — runs through the
+same `runTurn`, with `deps.onlyTools` set (`FROM_PC_TOOLS` / `FROM_WHATSAPP_TOOLS` in
+`registry.ts`). The palette is filtered to those tools, and `runTurn` refuses any other
+call before `dispatch`, advertised or not, feeding the model "Not run: that tool isn't
+available". `brain.askFromPc` / `askFromWhatsApp` return `ok` only when a tool ran and
+every tool that ran said it worked.
+
+### A picked agent shapes the turn (2026-10-21)
+
+The agent row (`brain/agents.ts`, the desktop's `agents.py` in the part that fits a
+phone) narrows a turn without adding a path. Phone, Files, Scheduler and Content run
+`turn()` with a scope that loads their tool groups whatever the words say and adds their
+brief to the system prompt — nothing is refused, the rest stays a `load_tools` away.
+Desktop, Browser and, with a PC paired, Research send the whole request as one `pc_task`
+spec to `dispatch`, so `remote.runTask`'s fingerprint gate still comes first; `kind:
+"research"` exists only for this (the model's own `pc_task` still picks browser or
+computer). The desktop's coordinator — plans across agents, hand-offs — stays on the PC.
+
+Every `pc_task` goes through `dispatch`, so that's where the chat hears about it: an `agent_message` event
+(the phone asking a PC agent, or handing a picked one the request, and the answer it brings back) through
+`onAgentEvent`, which useBrain turns into a card in the chat (2026-10-22).
+
+### One-step phone actions go around the operator (2026-10-18)
+
+Gemini switches the flashlight or texts Mom in one call; JARVIS used to send all of that
+through `phone_task` (Quick Settings, a Settings search, typing into WhatsApp: 10–40 s and
+several model calls). `device_control`, `send_message`, `call_contact`, `navigate_to`,
+`play_media` and `read_notifications` now go straight to public Android APIs in
+`DirectActions.kt` (torch, interruption filter, ringer, media keys, `Settings.System`,
+navigation/play-from-search intents, `SmsManager`, `ACTION_CALL`, a notification's
+RemoteInput). Each reads the state back and reports that, under the rule above.
+`phone_task` stays for everything else, including what no app can switch on Android 13+
+(Wi-Fi, Bluetooth, mobile data, airplane mode, hotspot, battery saver).
+
+Messages and calls are two native calls with the user between them: `comm_action
+resolve` finds the contact (and whether a notification reply is possible), the R2 dialog
+shows exactly who, which number and what text, and only then does `comm_action
+message|call` run with that approved number. A WhatsApp message goes out through the
+person's notification reply when one is showing (nothing opens on screen), otherwise
+through WhatsApp's click-to-chat link plus one accessibility tap on Send, confirmed by the
+message box emptying. Gemini's own WhatsApp send is a private Google–WhatsApp integration,
+and Android 16's AppFunctions caller permission isn't open to sideloaded apps, so neither
+is available here. `DEVICE_ACTIONS` in `registry.ts` is checked against the Kotlin
+branches by `registry.test.ts`.
+
+Platform limits found live (2026-10-18), each handled by an honest reply:
+- **WhatsApp calls.** WhatsApp's Contacts "voice/video call" rows are what assistants use,
+  but WhatsApp refused that intent from JARVIS ("Permission Denial"). JARVIS opens the
+  chat by the official link and presses **Voice call** / **Video call** instead. It counts
+  only a change *into* `MODE_IN_COMMUNICATION`, because JARVIS's own mic sets that mode too.
+- **DND off.** On Android 15+ (targetSdk ≥ 35) `setInterruptionFilter` toggles an
+  app-owned rule, so JARVIS can turn DND on but can't end one the user started. That reply
+  points the model to `phone_task` (Quick Settings).
+- **Spotify** ignores `MEDIA_PLAY_FROM_SEARCH`, and its session's `playFromSearch` didn't
+  start anything either. With a visible session only the player's own PLAYING counts
+  (`isMusicActive` blipped true while it stayed idle).
+- **Paused apps** (Family Link, Digital Wellbeing). Starting one doesn't throw: Android
+  shows "App isn't available". Every app-targeted action checks `isPackageSuspended` first.
+
+> **The rule carried over from the Python brain: never claim a tool succeeded unless its
+> actual return value says so.** This shows up throughout dispatch, the operator loop and
+> remote task resolution, and it is not optional politeness — it's why the assistant is
+> trustworthy.
+
+---
+
+## 4. The on-phone operator
+
+The "do a whole task in an app" loop, ported from the desktop's `autopilot.py`:
+
+```
+observe the screen's node tree → ask a model for ONE JSON command →
+execute it through the AccessibilityService → repeat
+  … until {"do":"done"} / {"do":"fail"} / the step-or-time budget runs out
+```
+
+### It runs in Kotlin, not the WebView — and must stay there
+
+A phone task drives *another* app, so JARVIS is backgrounded for the whole task. Measured
+on-device 2026-09-23 over CDP: **~60 s after JARVIS leaves the foreground, Chromium pauses
+the hidden WebView's entire task queue** — a 1 s `setInterval` ticked 0 times for 90 s and
+a pending `invoke` resolved only when JARVIS came back — while the process sat at
+foreground-service priority, *not* OS-frozen. Every WebView-hosted task longer than that
+stalled. So the loop moved native:
+
+| Piece | Where | What |
+|---|---|---|
+| The loop, every guard, policy, prompts, verification | `OperatorCore.kt` | **Android-free** — device, model and journal are interfaces, so it's unit-tested on the JVM (`OperatorCoreTest.kt`) |
+| Device / model / journal / run registry | `NativeOperator.kt` | AccessibilityService adapter, an HTTP route ladder, the Room journal, start/status |
+| Start + relay | `tools/dispatch.ts` `runPhone()` | Preflight, up-front consent, `operator_start`, then polls `operator_status` |
+
+The brain still owns **what** to call: `runPhone()` resolves the route ladder
+(`routes.ts`/`quota.ts`) to concrete URLs + auth through each provider's `wire()` and
+hands them over; native only shapes the request body (Gemini `generateContent` or OpenAI
+chat), so endpoint and credential knowledge stays single-sourced. Routes the native ladder
+benches mid-task come back in the status and are fed to `quota` via `ask.benchFromNative`.
+Keys live in native memory for the task only — never journaled.
+
+The brain only **starts** a task and **reads** its progress. If the WebView is paused
+mid-task, the task still finishes; the journal, a result notification and the next
+`operator_status` poll all carry the outcome. **Do not move any part of the decision loop
+back into JS**, and don't add a mid-task step that needs the WebView awake.
+
+### What the loop enforces
+
+- **Roles.** An executor step per command (90 s ceiling; one carried a screenshot past
+  31 s) and an independent completion checker. The plan (2–5 checkable steps) rides on
+  the **first** command's `"plan"` field — it used to be its own model call before the
+  first step.
+- **Vision.** A screenshot goes with a step only when it earns its latency: the first look
+  at each app (never at JARVIS itself), after a failed action, when stuck, after a
+  coordinate tap, on a sparse element list (< 10 labelled — the app is hiding its UI), or
+  when the model asks with `{"do":"look"}`. The prompt says whether one is attached; when
+  the ladder falls through to an OpenAI-format route (no image in that body), native
+  appends a note saying it wasn't sent.
+- **Guards.** Adaptive step and wall-clock budget (only a *progressing* task earns more),
+  cycle detector, no-progress detector, duplicate-message guard, and a STOP check before
+  every action (the journal's cancel flag + the overlay's STOP counter).
+- **Policy (R0–R3).** Consent for an external side effect (R2: send, share, post, call) is
+  taken **up front** — `operator_start` answers `needsConsent` and the brain asks while
+  JARVIS is still on screen. Mid-task approval is impossible (JARVIS's UI is behind the
+  driven app), so any R3 step, and any R2 step without that consent, suspends the task
+  honestly. There is no mid-task "ask the user" either.
+- **Coordinates.** `tap_point` (thousandths of the screenshot), `tap_xy` and `drag` (pixels,
+  as element bounds are printed) share one policy, `classifyPoint`: R1 only in a low-risk
+  goal, with a label that passes the R2/R3 word checks and no risky element under any
+  point touched — re-checked on a fresh observation right before acting, against the app
+  rather than the exact generation (animated pages would fail every time). Unlabelled, or
+  in an R2 goal, it's R2. **One coordinate system per step:** on a step that carries a
+  screenshot, pixel commands (`tap_xy`, `drag`) are refused — models give thousandths of
+  the image even to a pixel command (live: `tap_xy (500,940)` meant the Search bar and hit
+  Samsung's sign-in card). **JARVIS's own STOP overlay is invisible to the operator:** its
+  windows are dropped from the snapshot, blacked out of screenshots, and a coordinate
+  gesture on it is refused — the operator had pressed it and cancelled itself. `enter` (the keyboard's Enter/Search key, `ACTION_IME_ENTER`) is
+  R2 in any goal that mentions messaging, since Enter can send.
+- **Hardware facts.** Native observations include Android Build model, manufacturer,
+  Android version and SDK. An editable device name cannot substitute for the model
+  code. A read-only hardware query may use these facts without screen taps, while
+  retaining independent native completion verification.
+- **Truthful completion.** A `done` is only reported after the checker PASSes it, with a
+  receipt the journal's compare-and-set accepts. The checker judges a **fresh** observation
+  (plus a screenshot when it takes images, plus the facts noted during the task), and
+  ordinary UI state counts as evidence (a Pause control = playing). For a playback goal
+  the phone's own audio state (`AudioManager.isMusicActive`) is ground truth: nothing
+  playing rejects without a model call, and both executor and checker see it — the checker
+  once passed a paused Spotify mini-player off the song's title. A capture goal ("click a
+  photo", "record a video", "take a screenshot") is judged the same way off the **media
+  store**: `MediaSaves` (NativeOperator.kt) counts new photo/video rows from MediaStore's
+  change notifications — no storage permission, only that a row appeared — and the count
+  rides on the step line ("→ a new photo/video was saved") and to the checker
+  (`photos_videos_saved_during_task`). A camera's viewfinder looks the same after the
+  shutter: on 2026-10-19 the checker rejected every shot and the operator took 8 photos. A `done` whose summary
+  narrates non-completion is sent back to work, not ended. A second rejection with nothing
+  done in between ends the task as `unverified` ("I think X, but couldn't confirm it")
+  instead of burning steps re-claiming. Before any give-up (cycle, no progress, step or
+  time budget) the checker looks once: a goal already met on screen succeeds — the
+  2026-09-25 Spotify run had the song playing while the operator toggled play/pause into
+  "nothing is changing". Running out of quota *after acting* says what was last done, so
+  the user checks instead of resending.
+- **Evidence the system records (2026-09-26).** The checker no longer has only the final
+  screen and the operator's word. After every action the loop diffs the accessibility tree
+  before and after it (`screenChange`): switches/radios that flipped, a tab selected, a
+  quick-settings tile's `stateDescription` (now captured by the service), a pressed control
+  that renamed itself ("Portrait" → "Auto rotate", Start → Stop), text typed into a field,
+  and the words that appeared or went away. That tail rides on the step line (`tap[4]
+  "Wi-Fi" — ok → "Wi-Fi" unchecked→checked`) so the executor sees what its move did, and
+  every state flip (not typing) goes to the checker as `changes_made` — what the task really
+  changed, even on a screen since left. Scrolls and other navigation never report flips (a
+  recycled row is not a toggle), and only the front window's words count (the status-bar
+  clock ticked into "new: 18:16"). Every label any screen showed is kept too, so the checker
+  gets `claim_evidence`: where each number and name in the claimed answer was seen
+  ("nowhere" flags an invented value; "01" matches the goal's "1"; fields are excluded — the
+  operator's own typing is not evidence). The checker replies with `checks` first (each
+  thing the goal needs, its evidence, met or not) and `parseVerdict` refuses a "pass" that
+  lists an unmet check. A "no" read off the element list after a state flip gets **one
+  second look with a screenshot** before it rejects — a false rejection sends the operator
+  back to a toggle it already set (the rejection now also says never to re-tap a switch the
+  screen shows set). A place the goal names ("in Settings") is a route, not a requirement
+  (live, auto-rotate was on via the quick panel and the checker rejected it twice for not
+  using Settings); "couldn't find it" is not a pass unless the goal asked whether it exists.
+  On a pass the user hears **the checker's summary**, written from that evidence — the
+  operator's chained `done` is composed before its tap runs, and said "already on" for
+  switches it had just turned on. An explicit `fail` gets the same one-look rescue check as
+  every other give-up.
+- **Speed (2026-09-25 night).** Every model round-trip costs 2–8s, so the loop avoids them:
+  JARVIS's own screen is never walked (an empty observation — its WebView took 0.9–3s);
+  when the goal names exactly one installed app, it is opened with no model call
+  (`appNamedIn`, labels cached per process in `LauncherApps` and warmed at plugin load —
+  `loadLabel` over every app was ~3s, paid twice); a splash screen after a launch is
+  re-looked at (3×600ms) instead of asked about; a chained `"then"` (text entry, Enter, or
+  `done` — never a tap: the same control can change meaning, Stop→Resume) runs without a
+  call; `set_text` on a Search button opens the field and types. Screenshots only when the
+  list can't carry the step (sparse, failure, stuck, `look`, coordinate tap, or controls
+  with no label even inside them); a button's child label is shown on it (`"Stop" (inside)`)
+  and step lines name what was tapped. The ladder hedges a call that hasn't answered in 5s
+  (10s with an image) with the next ready route and takes the first answer; the winner of
+  a hedge is asked first from then on (per process), so a route that is slow tonight stops
+  costing a hedge on every call.
+- **Reading the screen (2026-09-26).** The list is built to be self-sufficient: a clickable
+  row with 1–3 labelled descendants carries them joined (`"Dark mode · Calendar style"
+  (inside)`) and those plain children aren't listed again; a bare control takes the
+  nearest sibling label (`RadioButton "Dark" (beside)` — Samsung's theme picker); both use
+  the hierarchy `path`, not bounds (a floating search bar is drawn over rows it doesn't
+  own). A row with exactly one checkable inside shows its state (`"5 minutes" (inside)
+  (clickable,checked)`); a container that holds labelled rows is a list and borrows no
+  label. The service sets `flagIncludeNotImportantViews` and the snapshot keeps checkable
+  nodes: Samsung's option pickers hide bare RadioButtons that way, and without them which
+  option was checked was invisible — the checker rejected correct screen-timeout changes.
+  Those views don't always send the events that refresh the service's node cache (Clock's
+  "Resume" stayed "Resume" in the list after it became "Stop"), so every snapshot starts
+  with `clearCache()` (API 33+). `appNamedIn` matches whole labels, or a label's first word
+  when only one app starts with it ("Chrome" → this phone's "Chrome Beta"), ignores "my
+  phone", and prefers the app right after an opening verb ("open Chrome and search
+  Google" → Chrome).
+  The keyboard window, JARVIS's own windows, the header line and pixel bounds on plain text
+  are left out. `open_app` from the operator lands on the app's main screen
+  (`CLEAR_TOP`), never on the page an earlier task left it on.
+- **Unfamiliar apps (2026-09-26).** Most failures on never-tried tasks were the operator
+  getting lost, not the model being unable: it scrolled Display settings up and down until
+  the cycle guard ended the task, twice, and never searched. Now three scrolls in a row add a
+  hint naming the screen's search control; a back-and-forth scroll cycle (harmless — it breaks
+  nothing) is redirected once instead of ending the task; two failures in a row, a stuck
+  screen or that redirect ask for a **new plan** on the next command (no extra call, at most
+  two per task). **Progress means new information**, not a changed screen: a move that shows
+  no label unseen this task, flips nothing, types nothing and notes nothing is stale; five in
+  a row say "you're going over old ground — if it isn't in what you've seen, fail" and stop
+  earning budget extensions, nine end the task (after the checker looks). Live, a lookup for
+  a setting this phone doesn't have went Display → search → back three times for 171 s and
+  36 model calls, every move "changing the screen". Stale actions are retried more patiently
+  (see *Stale observations*). `quick_settings` (`GLOBAL_ACTION_QUICK_SETTINGS`, R0) reaches phone-wide
+  switches Samsung keeps out of Settings (auto-rotate has no Settings entry at all); the panel
+  is dismissed when the task ends so it isn't left over JARVIS. A **lookup** goal ("check…",
+  "what is…", no change verb) may walk through sensitive *areas* — `security`, `permission`,
+  `administrator` — without the whole task becoming R3 ("what's my security patch level" was
+  refused at its first tap); critical *acts* (delete, uninstall, pay, sign in, passwords) stay
+  R3 in every goal. On the chat side, the system prompt now says `phone_task` also answers
+  questions only the phone's screens can (a setting's value, the device name, uptime) — the
+  chat model had asked "want me to check?" for one and invented an uptime for another — and
+  `loop.ts` gives a reply about the phone that called no tool one silent recheck round
+  (`answeredPhoneWithoutLooking`, beside `claimedWithoutActing`): on its Groq fallback the
+  chat model answered "Android 14" for a phone on 16 without looking. A question about the
+  TV gets the same round when `tv_control` is on offer (`answeredTvWithoutLooking`, 2026-10-19:
+  "nothing playing on the TV" with no tool call). When a turn runs out
+  of tool rounds it no longer says only "I worked on that but couldn't fully finish it" —
+  that threw away what the tools had found (a real "read my Chrome screen and search up the
+  time" request ended that way): one last call answers from the results, and if the model
+  still reaches for a tool, the reply quotes the tools' own summaries (`partialReply`). And
+  the chat ladder (`ask.ts`) now treats a 400 like the native ladder does — this model's
+  reply failed (Groq's `tool_use_failed`), so try the next model this turn, unbenched —
+  instead of ending the turn with "I hit an error: Groq 400". A `phone_task` that **acted
+  and failed** (the native result's `acted`: an `isActuation` step in its feed) ends
+  `phone_task` for that turn: `runTurn` answers any further call with a refusal instead of
+  dispatching it, so a reworded goal can't repeat the side effect (2026-10-19: 4 + 4 photos).
+- **Doing exactly the goal.** The prompt (kept tight — it is paid on every step) says a
+  goal to open/find/search/show/check is done when the thing is on screen, never toggle or
+  select beyond it, and to use an app's search rather than browse. The checker judges the
+  outcome, not the route taken, and fails an unrequested change (live, "search for dark
+  mode" once ended by switching the phone's theme).
+- **Forgiving replies.** Models drift from the schema; the parser takes `{"action":…}`, a
+  verb as the key (`{"note":"…"}`, `{"tap":5}`), `{"done","summary":…}` (not even JSON),
+  and a second object in the same reply as the chained follow-up. `enter` aimed at a
+  non-field presses Enter in the focused field; a stale action gets up to three fresh
+  re-observations.
+- **Settling.** A tap whose screen never goes quiet (a running timer, a progress bar) is
+  reported done with a note, not as failed — the failure made the operator tap again,
+  which on a toggle undoes it. `open_app` waits for the new app's first screen to settle
+  (≤ 2.5 s) so the first look isn't a splash screen.
+- **Stale observations.** Every action is bound to the observation's generation, and a
+  live screen moves it on during a model call. On `stale_observation` the loop re-observes
+  (up to three times, 250/500/750 ms apart) and retries only if the same control (its
+  native selector) is still there, at the same risk, **still saying the same words** — if
+  "Start" has become "Stop" the model decides again. A low-risk retry is bound to the
+  control rather than the generation (`generation = -1`; the service still checks app,
+  selector, index and window when it acts): a running stopwatch redraws every 10 ms, and
+  "Stop" went stale six times in a row (2026-09-26) until a coordinate tap got through.
+- **Coming back to report.** The spoken summary is produced by the WebView, which is
+  paused by the time a task ends, so native brings JARVIS to the front when a task
+  finishes (a bound AccessibilityService exempts the app from background-launch limits).
+  Not after STOP, and not after a success the model flagged `stay_in_app` (media playing,
+  a chat left open) — there the result notification is the signal.
+
+The TS replay cache (`operator/cache.ts`) was dropped with the move: it had never
+successfully promoted a workflow (see STATUS.md), so there was nothing to port.
+
+### The per-step prompt IS the token budget
+
+One task step = one model call, and the whole screen node-tree goes in every one, which is
+why **the operator, not chat, is what exhausts the route ladder**. Anything added to a
+node's rendered line (`renderObs` in `OperatorCore.kt`) is paid ~80 times per step, every
+step: no `selector` (the model targets by index), and toggle state only on nodes that are
+actually checkable. A test caps a full 80-node screen's size.
+
+---
+
+## 5. Everything native goes through one bridge
+
+```
+Kotlin method on PhonePlugin.kt
+  → Rust #[command] in tauri-plugin-phone/src/{commands,mobile}.rs
+    → invoke("plugin:phone|<name>") in src/brain/platform/index.ts
+```
+
+Typed request in, typed response out. **Don't build a second path for a new capability —
+add a command here.** The name must stay in sync across **four** places: snake_case in JS
+and Rust, camelCase in the Kotlin `@Command`, the `build.rs` `COMMANDS` list, and the
+`run_mobile_plugin("…")` strings in `mobile.rs`. Miss one and the call fails at runtime
+with nothing at compile time — `QrScanner.jsx` spent months invoking
+`request_camera_permission`, a command that existed in none of the four.
+
+**Response fields go through Rust too.** A command with a typed response (say
+`TaskStatusResponse` in `models.rs`) is deserialised in Rust before JS sees it, and serde
+drops any key the struct doesn't declare. A field added to the Kotlin `JSObject` alone
+never arrives: `goal` on `task_status` (2026-10-18) compiled, shipped and read as empty
+until the struct got the field. Add it in `models.rs` too (and to the `desktop.rs` stub).
+
+### Every native call needs a timeout on the JS side
+
+Several `@Command`s resolve their `Invoke` from an **Android callback** rather than
+returning directly — gesture results most of all. Android does not guarantee those
+callbacks fire: if the AccessibilityService loses window focus or a system dialog steals
+input, neither `onCompleted` nor `onCancelled` arrives, the `Invoke` is never resolved,
+and the awaiting JS promise hangs **forever**. That wedges the whole `phone_task` loop,
+and `shouldAbort` is polled *between* steps rather than during an awaited invoke, so even
+the STOP button can't recover it — only an app restart.
+
+Two guards, both required:
+
+1. Kotlin posts a watchdog alongside `dispatchGesture` so a missing callback still
+   produces a receipt (`GESTURE_CALLBACK_TIMEOUT_MS` in `JarvisAccessibilityService.kt`).
+2. `phoneInvoke` in `platform/index.ts` races every call against
+   `PHONE_INVOKE_TIMEOUT_MS`. Commands that legitimately block on the *user* — a folder
+   picker, a permission screen — are listed in `UNBOUNDED_COMMANDS` and exempted.
+
+Adding a command that waits on the user? Put it in that set. Adding one that resolves
+from a callback? The timeout already covers you.
+
+### The event bridge is broken on this device — poll a counter instead
+
+Tauri's JS *event*/Channel bridge (`addPluginListener` + native `trigger(...)`) drops
+callbacks during WebView startup reloads (`[TAURI] Couldn't find callback id …`), so a
+fired native event silently never arrives. Confirmed live. The plain request/response
+`invoke()` path does not have this problem.
+
+Two features already work around it the same way — **poll a monotonic sequence counter**:
+
+- Wake word: `platform/wakeword.ts` polls `poll_wake_word` every 140 ms for a rising `seq`,
+  **one poll in flight at a time** (with overlap, a later tiny reply overtook the one
+  carrying the audio). **The command is recorded natively** (2026-10-11): after a
+  detection the engine keeps its own mic loop going (`CommandCapture` in `WakePreRoll.kt`,
+  energy VAD — loud is 2× the room level (30th-percentile chunk of the 4 s before the wake,
+  held for the command), speech is a run of ≥2 loud 80 ms chunks;
+  ends 1 s after speech, at 4 s with none, or at 10 s) and a later poll
+  carries `preRoll` — one base64 WAV of the 3 s before the detection plus the command —
+  and `speech` (false when nothing past the wake sounded like speech; JS then skips the
+  recogniser). The engine is never stopped for a command, so "Hey Jarvis, open X" in one
+  breath keeps its first words (the old engine-stop → 250 ms → `getUserMedia` handoff lost
+  ~0.5–1 s). JS transcribes the clip once, with the name alone as the hint (never the
+  command prompt's "Hey JARVIS": Whisper can echo its prompt, and an echo of "Jarvis" has
+  no greeting). That one transcript is also the wake check: the command counts only if a
+  greeting precedes the name (`heardWakePhrase`, which also takes Whisper's "Kay"/"A." for
+  "Hey"), and is whatever follows the last one (`commandAfterWake`). A failed
+  transcription now drops the command — there's no separate recording to fall back on.
+  **Sensitivity (2026-10-31):** Settings → Voice saves a 0–100 sensitivity through
+  `set_wake_sensitivity` → `setWakeSensitivity`. Native preferences persist it and
+  the running listener reads it for each score. `WakeSensitivity.kt` maps 0 to 0.60,
+  60 (the default) to the existing 0.35, and 100 to 0.18. The microphone source,
+  greeting-required transcript check and singleton lifecycle are unchanged. The UI
+  waits for a successful native save and reports a failure instead of accepting it.
+- Cross-app STOP: `platform/stopOverlay.ts` polls `poll_stop_overlay` every 250 ms.
+- Routine notifications: the routine tick in `useBrain.js` (30 s, and on becoming visible)
+  polls `poll_routine_tap` for a new `seq`. The tap's intent is taken in **`MainActivity`**
+  (`onCreate` / `onNewIntent`), not the plugin: Tauri registers plugins only after the
+  WebView starts, and a tap that revives a killed JARVIS arrives as `onNewIntent` before
+  that, so the plugin never saw it (found live 2026-10-18). `tappedRoutine` refuses a
+  routine that already ran on or after the notification's day, so a WebView reload
+  reading the same `seq` again is safe.
+
+If you add a new native→JS async signal, use this same pattern. Don't reach for the event
+bridge; it will silently no-op on-device.
+
+One deliberate exception: the Android back button (`onBackButtonPress` from
+`@tauri-apps/api/app`, wrapped in `hooks/useAndroidBack.js`). Tauri's own `AppPlugin`
+only diverts back to JS while a listener is registered, and there's no invoke-based
+alternative. Settings and every `components/Sheet.jsx` panel (Conversation,
+Capabilities, Device, Skills) register it only while open, long after startup, and
+unregister on close so back falls through to Android again. Live-verified for
+Settings 2026-09-25.
+
+### The Kotlin side
+
+| File | What it is |
+|---|---|
+| `OperatorCore.kt` / `NativeOperator.kt` | The on-phone operator loop (§4) and its Android glue |
+| `JarvisAccessibilityService.kt` | Reads the screen's node tree; taps, types, scrolls (a scroll only reports ok if the screen actually moved), gestures, back/home; screenshot; the STOP overlay |
+| `WakeWordManager.kt` / `WakeWordService.kt` / `WakePreRoll.kt` | On-device "Hey Jarvis" (openWakeWord ONNX) as a foreground service. The mic loop is ours (2026-09-27): same model, 80 ms chunks, 0.35 threshold and 3 s cooldown as the library's `WakeWordEngine`, driving its `internal` `AudioProcessor` via a file-level suppression (Kotlin 1.9), so a ring buffer keeps the 3 s pre-roll and `CommandCapture` records the command after it from the same stream (2026-10-11) |
+| `SecureSecretStore.kt` | Provider credentials encrypted by a **non-exportable Android Keystore key**. SharedPreferences holds only ciphertext + IV; plaintext crosses the bridge for the life of one call and is never written to WebView storage |
+| `DeviceIdentityManager.kt` | The phone's EC identity key (Keystore, non-exportable). Only the public key, fingerprint, a monotonic counter and signatures cross the bridge — this is what authenticates the phone to the PC |
+| `AutonomyTaskStore.kt` | A **Room** database: the task journal. Goals, receipts, screenshots and results stay here, not in WebView storage, so a WebView backup can't become a second unredacted audit log |
+| `AutonomySupervisorService.kt` | Foreground service owning task lifecycle — start, cancel, suspend, complete. If the WebView dies, recovery marks the task *suspended*; it never blindly repeats the last action |
+| `AutonomyBootReceiver.kt` / `AutonomyRecoveryWorker.kt` | Reconcile task state after a reboot or an app upgrade |
+| `ActiveTaskRegistry.kt` / `NavigationWaitGate.kt` | Which task may act right now; and a pure decision gate so an *accepted* navigation action is never mistaken for a *verified* UI transition (STOP always wins a concurrent completion) |
+| `TvAdb.kt` | Network-ADB client for the user's TV (the `dadb` library, `dev.mobile:dadb`). Transport only: one shell command per call, one cached connection, one retry after the TV drops the socket in standby. Its RSA key sits in `noBackupFilesDir` |
+| `ArrivalWatcher.kt` | "When I get home" routines. Home is a Wi-Fi network by gateway + subnet (no SSID, so no location permission), learned when the TV or PC answers on its home address (`home_network` "mark"). A PendingIntent network callback (`ArrivalReceiver`) sees a home Wi-Fi come up while JARVIS is closed; a 15-minute `ArrivalSampleWorker` records home/away so a blip at home isn't an arrival. Arriving posts `RoutineAlarms.post` — the tap-to-run notification a timed routine uses. Pure half JVM-tested (`ArrivalWatcherTest.kt`) |
+| `ShareInbox.kt` | Text shared to JARVIS from another app's Share sheet, taken by MainActivity (like a routine tap) and polled by JS (`poll_share`) |
+| `WakeOnLan.kt` | A Wake-on-LAN magic packet (six 0xFF, then the MAC ×16) to the broadcast address and the device's /24, ports 9 and 7, three times. `ok` means it left the phone; callers prove the wake by reaching the device. Pure half JVM-tested (`WakeOnLanTest.kt`) |
+| `DirectActions.kt` / `DirectMatch.kt` | One-step actions (§3): device controls, navigation and play intents, contact lookup + SMS/call/WhatsApp send, notification read. `DirectMatch` is the pure contact-ranking and notification-title matching, JVM-tested (`DirectMatchTest.kt`) |
+| `JarvisNotificationListener.kt` / `TimerControl.kt` | Notification access: lists what's showing, replies through approved RemoteInput, and stops only a single unambiguous timer using the resolved Clock package's own Cancel/Stop/Dismiss action. Timer cancellation succeeds only when that notification disappears; otherwise the timer screen opens with an explicit failure. |
+| `RoutineAlarms.kt` | Timed routines while the WebView is paused: JS hands it every timed routine on each save (`schedule_routines`); it keeps one exact `AlarmManager` alarm (`USE_EXACT_ALARM`) for the earliest, rolls each forward in SharedPreferences, re-works every time on a time zone change, and posts "Time for <name>". It never runs a routine — a tap opens JARVIS and the WebView runs it as an ordinary turn. The one in-app alarm: reminders and alarms go to the Clock app |
+| `PhonePlugin.kt` | The `@TauriPlugin` command surface |
+
+The current command surface, grouped: the native operator (`operator_start`,
+`operator_status`), single operator actions (`observe`, `tap`, `tap_xy`, `double_tap`,
+`long_press`, `swipe`, `set_text`, `type_text`, `scroll`, `back`, `home` — no longer used
+by the brain now the loop is native; candidates for removal),
+app/system control (`open_app`, `close_app`, `open_url` — `http`/`https` only, since the
+URL is model-authored and injected page text can steer it — `set_volume`, `read_clipboard`,
+`open_system_settings`, `open_accessibility_settings`), TTS (`speak`, `stop_speaking`,
+`poll_speaking`), wake word (`start_wake_word`, `stop_wake_word`, `poll_wake_word`),
+STOP overlay (`show_stop_overlay`, `hide_stop_overlay`, `poll_stop_overlay`,
+`request_overlay_permission`), secrets (`config_secret_get/set/delete`), device identity
+(`identity_info`, `identity_sign_auth/envelope/pairing`,
+`identity_verify_host_challenge/envelope`), the task journal (`task_begin`,
+`task_checkpoint`, `task_status`, `task_finish`, `task_cancel`), calendar/clock
+(`calendar_action`, `clock_action`), device/file access (`get_device_stats`,
+`capture_screenshot`, `pick_folder`, `list_directory`, `read_file`), timed routines
+(`schedule_routines`, `poll_routine_tap`), the TV (`tv_shell`, `tv_capture`, §6a), Wake-on-LAN
+(`wol_send`, §6a), "send this to the TV" (`media_now`, `poll_share`, §6a), "when I get home" (`arrival_sync`,
+`home_network`), and one-step actions
+(`device_action`, `comm_action`, `notification_action`, §3). Rust command arguments aren't
+`Option`, and Tauri rejects a call missing any of them ("missing required key"), so JS
+sends every key. `platform/index.test.ts` parses `commands.rs` and checks each call;
+clock `show_alarms` and calendar `remove`/`show`/`request_permission` failed that way
+until 2026-10-18.
+
+The operator loop and the routine schedule (`RoutineAlarmsTest.kt`) are tested without a
+device on the JVM: `OperatorCoreTest.kt` drives
+`OperatorLoop` with a fake device, a scripted model and a fake journal
+(`./gradlew :tauri-plugin-phone:testDebugUnitTest` from `src-tauri/gen/android`).
+
+### Explicit hand-gesture sessions
+
+`GestureCameraService.kt` owns CameraX and the bundled MediaPipe recognizer. It
+publishes epoch capture time, a monotonic sequence, landmarks, hand count and the
+top-two classifier scores through `poll_gesture_recognition` on the existing
+Kotlin → Rust → JS bridge. The native latch independently enforces deliberate
+fist-stop (at least 800 ms, three samples, 85% confidence) so Stop survives JS
+stalls. Screen lock, explicit Stop and five-minute expiry still close the camera.
+
+The Android and Windows `gestures/engine.ts` copies share the action policy:
+continuous capture evidence, quality/margin checks, a neutral hand release between
+commands, motion-qualified swipes, smoothed HUD pointing and pinch dwell. Preserve
+the copies together. `useGestureModes` ticks stalled frames and owns capture and
+practice state. Practice filters all action/pointer execution except fist-stop,
+cancels owned push-to-talk and resets to neutral on either transition. Existing
+host adapters and approval gates remain the only action paths. UI feedback is a
+readout of this same engine, not a second recognizer. Settings → Gestures and the
+command palette open the dedicated Control/Learn/Tune views; Voice keeps a link.
+Activity and binding changes synchronously reset the engine and capture ownership
+without restarting camera inference. Pause suppresses hand commands but keeps
+explicit touch controls available through the same execution path. Manual buttons
+also work with the camera off (photo still requires a live camera); they retain
+approval gates. Guided practice records a target as learned only after fresh engine
+evidence matches it, never from a previous held result. Camera control uses an
+operation token so Stop cancels pending startup and late replies cannot reopen UI.
+Recent actions retain actual host results, including failures and unconfirmed
+requests. Native Android preview has a movable handle and a persistent Stop;
+collapsing it preserves its attached CameraX preview surface.
+
+See [gesture controls](GESTURE-CONTROLS.md) for behavior and physical acceptance.
+
+### STT and TTS use the WebView, not a Kotlin plugin
+
+This was deliberate. `platform/webspeech.ts` uses `window.speechSynthesis` for replies and
+`platform/stt.ts` uses `MediaRecorder` → Groq Whisper (falling back to Vertex Chirp when
+Groq fails, so one provider outage doesn't take voice input down) for listening, relying on Wry's
+WebView already granting `getUserMedia` once `RECORD_AUDIO` is in the manifest. It works
+and it's simpler — don't reintroduce a native STT/TTS plugin without a specific reason.
+
+(The native `speak`/`stop_speaking`/`poll_speaking` commands are a *different* thing: the
+Android system TTS used when the phone is speaking *as* the remote-controlled device.)
+
+---
+
+## 6. Remote-controlling the PC
+
+`remote/pc.ts` is a WebSocket client that pairs to the **unchanged desktop backend** and
+forwards whole tasks to it.
+
+- **Auth is device-key based.** The phone signs with its Keystore EC key; the host's
+  public identity is pinned from an expiring, single-use pairing QR. No bearer token is
+  accepted in URLs, WebSocket protocols, storage, or compatibility flags. Pairing is
+  QR-scan only.
+- **Network.** `pc.ts` tries the cross-network address (typically Tailscale) first, then
+  silently upgrades to LAN via a reachability probe, so switching Wi-Fi needs no user
+  action. `altHost` comes from the pairing QR.
+- **Task protocol v2.** A task has a stable id and idempotency key, is explicitly
+  accepted, can be resubscribed with an event cursor after a reconnect, and completes
+  **only** from a correlated terminal task event. Ambient chat or telemetry events can
+  never complete a task or keep one alive.
+- **Screen sharing.** `remote/webrtcScreen.ts` does *not* open its own signaling channel —
+  SDP/ICE rides over the same `pc.ts` WebSocket as `{type, data}` messages, then a real
+  `RTCPeerConnection` carries the video (DTLS-SRTP, P2P or TURN-relayed). Touch input goes
+  back over the WebSocket as `remote_input`, not through WebRTC.
+  A lost connection clears video and control, then permits two bounded fresh-session
+  recoveries. Closing cancels recovery and tears down the owned session. Android Back
+  closes live view through that same stop/disarm path.
+- **Lease-gated input.** `hooks/controlLease.js` is a fail-closed lease/sequence tracker
+  so the UI can't emit an unleased or replayed input envelope. The host enforces auth
+  independently; this stops the bug before it leaves the phone.
+  Local lease expiry counts down using elapsed time; an ACK without duration preserves
+  the existing expiry rather than resetting the displayed lease to zero.
+- **`send()` is fire-and-forget; `sendConfirmed()` is not.** Every outbound message is
+  queued on `outboundChain` and signed asynchronously through the native identity bridge
+  — which this file documents as prone to dropped callbacks. `send()` returns as soon as
+  the message is *accepted for sending*, so a `true` from it does **not** mean the PC
+  received anything. Anything that then tells the user the PC was told something must use
+  `sendConfirmed()` / `signalConfirmed()` / `cancelTaskConfirmed()`, which resolve only
+  once the signed envelope actually reached the socket. The STOP button reported "hard
+  stop sent" off an optimistic `true` while the task kept running on the PC.
+- **Approvals are keyed by task, not a single slot.** Several tasks can be subscribed at
+  once and each raises its own signed challenge, so `activeApprovals` is a
+  `Map<taskId, …>`. A newer challenge supersedes an older one only *for the same task*.
+
+- **Requests from the PC (2026-10-21).** The desktop can send `phone.command` {id, text}
+  over the same link ("set an alarm on my phone", also when it came to the PC on
+  WhatsApp). `useBrain` runs it as a scoped turn (§3) and answers `phone.result` {id, ok,
+  reply} with `signalConfirmed`; the desktop accepts the answer only from the device it
+  asked. Nothing is queued: a paused WebView doesn't answer, and the PC says so.
+- **WhatsApp on the phone (2026-10-21).** Not a link to the PC: `JarvisNotificationListener`
+  hands each WhatsApp notification to `WhatsAppInbox.kt`, which queues commands from
+  listed contacts with a `seq`; JS polls `poll_whatsapp` (1.5 s, §5), runs each as a
+  scoped turn and answers with `whatsapp_reply` (the notification's RemoteInput, as
+  `send_message` already does). An empty reply drops a command the PC's own channel
+  answers. When JS hasn't polled for 6 s (paused), the inbox posts a "tap to run"
+  notification instead; nothing is ever answered natively.
+
+> There was once a second phone↔PC channel (`platform/remoteLink.ts`, PeerJS-mediated). It
+> never got past a stub and has been deleted along with the dependency. The live path is
+> `remote/pc.ts` + `remote/webrtcScreen.ts`, and nothing else.
+
+## 6a. Controlling the TV
+
+The phone drives the user's Android TV over **network ADB**, the TV's own "USB
+debugging" on the home Wi-Fi (port 5555). Nothing is installed on the TV. The TV is
+reached on the same LAN as the phone, or — only if the user installs Tailscale on the TV
+and adds its address — over their tailnet.
+
+- **One TV, one or more addresses.** The saved host may be a comma list ("192.168.1.20,
+  100.101.1.2"): `nativeTvShell` tries each when the last was unreachable, and the one that
+  answered goes first next time. The second is meant for the TV's Tailscale address: a
+  home with two routers, the second in router mode, has two networks, and nothing on the
+  first can open a connection into the second (the PC timed out from a different subnet
+  in the 2026-09-30 spike). A refusal from the TV ends the attempt: another path to the
+  same TV won't change it. When nothing answers, the reply says that may be the cause.
+- **Waking it from off (Wake-on-LAN).** A TV in deep standby has its network down, so
+  ADB can't reach it. The TV's MAC is read once over ADB (`ip -o link`, the connected
+  interface, Ethernet first) the first time it answers and saved with the TV record.
+  Then `power_on`, `play` and `open_app` first probe with `echo ok`; only an
+  *unreachable* TV (not one that refused the phone) gets a magic packet (`wol_send`),
+  and the action goes ahead once ADB answers again, within 30 s. The PC does the same
+  for itself: the desktop puts its network adapters (`wake: [{mac, ip}]`, wired first)
+  in the host-signed `auth.ready`; the phone keeps them under their own storage key
+  (rewriting the pairing record would rebuild the link) and `wake_pc` sends to each,
+  then counts the PC awake only once the link is back online. A broadcast never
+  crosses a router, so both need the phone on the device's own network.
+- **"Send this to the TV" (`cast`).** A YouTube or Netflix link (`parseLink`, also inside
+  shared text), or with no link what's playing on the phone: `media_now`
+  (`DirectActions.mediaNow`) reads the playing media session — package, title, channel,
+  position extrapolated from `PlaybackState` — through notification access. YouTube has
+  no video id in its session, so `findYoutubeVideo` finds one by web search and keeps it
+  only if YouTube's own oEmbed title matches. YouTube opens at `watch?v=<id>&t=<s>s`;
+  the position the TV reports says whether it took the start time, and the reply says
+  so if not. The phone is paused only once the TV plays (Netflix the other way round:
+  paused first, so the profile resumes there). **Share → JARVIS**: MainActivity's
+  `ACTION_SEND text/plain` filter hands the text to `ShareInbox.kt`; JS polls
+  `poll_share` (keyed `boot:seq`, so a WebView reload doesn't replay it) and runs a
+  YouTube/Netflix link as an ordinary "play this on the TV" turn.
+- **By sight: `look` and `task` (2026-10-19, `remote/tvSight.ts`).** Ports of the
+  desktop's `tv.look` and `tv_operator.py`. `tv_capture` (`TvAdb.capture`) runs
+  `screencap -p` over dadb's binary `exec:` channel — shell output is text — and returns a
+  ≤1280 px JPEG, `blocked` (nothing captured, or black: a secure layer, which in Netflix
+  is everything), `blank`, and a 64×36 grey signature (`TvFrame.kt`, JVM-tested) the loop
+  compares to tell whether a press changed anything. The vision call goes over the route
+  ladder with the screenshot attached (`chatOverLadder`), which keeps it to models that
+  can see. The task loop runs **in the WebView**, unlike phone_task (§4): driving the TV
+  never takes the phone out of JARVIS, so nothing pauses it; with the screen off it
+  stalls and the 4-minute deadline ends it. Success is only the model's `done` on a
+  screenshot; STOP, three unchanged screens, a hidden screen and the step cap all end it
+  with a reason. No `ask`: an ambiguous goal fails with the question.
+- **One command, `tv_shell(host, command)`.** Kotlin (`TvAdb.kt`) is transport only.
+  `remote/tv.ts` builds every command from the typed `tv_control` actions. Model text only
+  enters a command through `shellQuote()` or as a validated package name or title id, so
+  the model never writes shell.
+- **Every action is verified from the TV itself (rule 3).**
+
+  | Action | Proof it worked |
+  |---|---|
+  | Open an app | `dumpsys window` `mCurrentFocus` names it |
+  | Volume | `media volume --get`; if `--set` doesn't take, it falls back to volume keys and reads again |
+  | Mute | `dumpsys audio` `Muted:` |
+  | Power | `dumpsys power` `mWakefulness` |
+  | Playback | The app's `dumpsys media_session` entry: state 3 **and** a position that advances between two reads; Netflix must also remain the focused package at final verification |
+  | Remote-button presses | None; reported as "sent" |
+
+- **Netflix links need `-e source 30`.** Without it Netflix ignores
+  `https://www.netflix.com/title/<id>`. A cold start shows "Who's watching?"; Netflix keeps
+  the link across it, and one OK picks the last-used profile.
+- **Netflix's playback state lies at the profile screen.** It reports state 3 at position 0
+  there, so state alone never counts as playing.
+- **The name → id lookup is checked against Netflix.** The id comes from grounded web
+  search. Netflix's public title page (~1 MB, read whole: since Oct 2026 the name is in the
+  embedded data near the end, see `titleNameIn`) then confirms which show it is. That is
+  why `https://www.netflix.com/*` is in the `http` capability. A season-page ID is
+  normalized only when its page supplies one unambiguous `topLevelVideoId` with
+  matching parent title data; requested-title matching still applies (2026-10-24).
+- **What this TV can and can't see.** Screenshots work (re-tested 2026-10-11: the launcher
+  and Settings capture in full) except while a DRM app is in front: Netflix marks its video
+  *and* its UI secure, so it can never be captured, and `uiautomator dump` is opaque inside
+  Netflix, YouTube and Prime too. The vision loop described above works on capturable
+  screens: Home look and YouTube search passed live on 2026-10-24 after explicit
+  screenshot permission. Protected playback correctly refuses capture; leaving the
+  protected player may make the app menu capturable again. Measurements are in
+  `docs/STATUS.md` "TV control" and `TV-TESTING-2026-10-24.md`.
+
+---
+
+## 7. Three memory systems, not one
+
+Check which one a feature reads before assuming "memory" means what you think:
+
+1. **`memory/store.ts`** — facts + conversation turns in `localStorage`, plain keyword
+   recall (`keywordRank()`). The port of the desktop's file-based `memory_store.py`.
+2. **`memory/vectorStore.ts`** — semantic recall via Vertex AI `text-embedding-004`
+   embeddings and cosine similarity, also `localStorage`-backed. Net-new, not part of the
+   Python port map. Note the write is gated on a `saJson` argument: `remember(text,
+   saJson)` only embeds when the caller passes the service-account JSON, and `facts(query,
+   saJson)` only searches when it gets one. **Pass it on both sides or neither** — for a
+   long time `dispatch.ts` passed it only on the read, so every turn paid an embedding
+   round-trip to search a store nothing had ever written to.
+3. **`memory/proceduralLearning.ts`** (fronted by `memory/playbooks.ts`) — durable
+   *verified* procedural learning. Prose a user types in chat is reference-only and never
+   executable; a workflow only becomes executable after entering through the typed
+   candidate API and collecting **three independent deterministic success receipts**.
+   Deliberately not exposed as model tools.
+
+The **Memory view** (dock → MEMORY, or voice `control_interface open_memory`; port of the
+desktop's `MemoryOverlay`) shows stores 1 and 3 plus saved chats, with a creation
+timeline. Its Forget is exact — `store.deleteFact(text)`, a playbook by its unique name, a
+chat by id — unlike the voice `forget`, which substring-matches. Fact timestamps live in a
+separate `jarvis.android.facts.at.v1` map so the fact list keeps its plain `string[]`
+shape; facts saved before it existed are undated and just don't appear on the timeline.
+
+---
+
+
+**One memory with the PC (2026-10-19).** Facts (`store.ts`) and routines
+(`schedule/routines.ts`) — not playbooks, whose two shapes differ — merge with the paired
+PC's over the signed link (`memory/sync.ts`, the desktop's `memory_sync.py`). Facts are
+keyed by normalised text (`factKey`), routines by name (`routineKey`); the newest change
+wins, and forgetting leaves a dated tombstone (`jarvis.android.facts.gone.v1`,
+`…routines.gone.v1`, 90 days) so a deletion propagates instead of being re-added. A routine
+also carries `updatedAt` and `origin`: a timed routine synced from the PC is listed and
+runs by name here, but neither `routineAlarms` nor `dueRoutines` fire it — the PC's clock
+does (and the PC skips the phone's). The phone starts each exchange (`memory.sync`: its
+changes since it last sent, plus the PC's cursor) when the link comes up, every minute
+while it's up and just after a memory or routine tool runs; the PC answers
+`memory.synced` with its own changes and a new cursor (`jarvis.android.memorysync.v1`,
+keyed by the PC's host id, so a different PC starts from zero). Cursors are inclusive: a
+repeat is harmless, a miss isn't.
+
+**The nightly digest (2026-10-19)** — `memory/digest.ts`, the phone's half of the
+desktop's `memory_digest.py`. The first idle moment after 03:00 that JARVIS is open, one
+plain call on the active model reads the user's own messages not digested yet (FNV hashes
+of read ones are kept) and adds at most five new facts through `memory.remember`, so they
+sync like any other. Only user turns are read, never replies or tool output, so nothing
+JARVIS read can plant a fact; it adds and never deletes. Toggle: Memory ▸ Facts.
+
+## 8. Desktop vs mobile splits
+
+**Rust: compile-time.** `src-tauri/src/lib.rs` gates every desktop-only feature (system
+tray, global hotkey, spawning the Python sidecar) behind `#[cfg(desktop)]`. Mobile builds
+compile those blocks out entirely. Add desktop-only capabilities the same way — not with
+a runtime `IS_MOBILE` branch.
+
+**The one mobile-only Rust block: exit.** When the activity is destroyed (swiped out of
+Recents), tao exits the process. A normal `exit()` runs C++ static destructors, and
+onnxruntime's tore down under the live wake-word threads — a native crash, which made
+Android switch JARVIS's accessibility service off. `RunEvent::Exit` therefore ends a
+mobile process with `_exit(0)`. Don't swap it for `prevent_exit()`: tao starts a fresh
+app instance on every activity `onCreate`, so a process that outlives its activity would
+run two Tauri apps.
+
+**Config: per platform.** `tauri.conf.json` declares four desktop windows (`main`,
+`overlay`, `browser-panel`, `control-overlay`); on Android Tauri built WebViews for them
+too, and a hidden 0×0 one ran a second copy of the whole app — its own brain, pollers and
+wake-word loop — and swallowed invoke responses (`[TAURI] Couldn't find callback id`).
+`tauri.android.conf.json` (JSON-merge-patched over the base config, so its `windows`
+array replaces the base one) keeps `main` only. A new desktop window belongs in the base
+file; don't add one to the Android file.
+
+**React: runtime.** One shared component tree renders on both platforms, so things like
+desktop-only window-focus effects are guarded by `IS_MOBILE` from `useAssistant.js`.
+
+**A React caveat that cost real debugging time:** the wake-word listener is a module-level
+singleton (`syncWakeWord()`, keyed by a config-hash signature) deliberately *not* tied to
+a React effect's mount/unmount. StrictMode's mount→unmount→remount was killing the engine
+mid-boot. Don't "tidy" it back into an effect.
+
+### English guidance and imported skills
+
+`brain/taskGuidance.ts` selects a compact English task guide for the TypeScript chat
+prompt. `brain/skillStore.ts` stores reviewed user imports in WebView local storage;
+Settings → Skills manages import, preview, activation and removal. Imports begin
+disabled. Enabled keyword skills require a matching English word/phrase; unkeyed
+skills are general guidance. No unrelated-skill fallback is used. At most three
+matching skills and 18,000 instruction characters enter a local main-chat prompt.
+Imported text is JSON-encoded as untrusted reference material and never executes.
+Incoming PC/WhatsApp requests and scoped consultations do not receive local imports.
+The existing dispatch, permissions and verification boundaries remain in place.
+See [USER_SKILLS.md](USER_SKILLS.md) for formats, limits and storage behavior.
+
+The home-screen CSS keeps Customize's accent and corner variables while adding
+focus, touch, reduced-motion and overflow refinements; small control radii remain
+derived from the selected corner setting.
+
+
+---
+
+## 9. Conventions
+
+### Ecosystem foundation preview (2026-10-31)
+
+`WorkflowJournal` remains the conversation checkpoint owner. Its in-process
+subscription updates the existing Tasks view alongside native Room and signed PC
+tasks; no tools run from the task cards. A per-workflow STOP request survives stale
+in-flight object writes, is checked after model calls and between tools, and is
+cleared at completion. Interrupted effects retain their pending intent for manual
+reconciliation. The original version-1 records remain readable; malformed records
+are preserved and fail closed. Room migration for portable conversation jobs belongs
+to milestone 2, after the foundation acceptance gate.
+
+The existing phone bridge adds `health_status` → `healthStatus` and
+`health_export` → `healthExport`. Health is read-only and does not request
+permissions. Repair buttons open the existing system/setup screens. Diagnostic
+export is reconstructed from closed vocabularies and bounded numeric fields in
+both TypeScript and Kotlin before Android shares a single cache file. Native
+permissions and readiness refresh when the page opens or returns to the foreground.
+Provider configuration is distinct from verified availability. Optional source
+version metadata arrives in the existing host-signed `auth.ready`; old peers need
+no new feature support. Stable updates remain the default; opt-in beta checks
+GitHub prereleases with an independent daily check window and prerelease ordering.
+
+`contracts/ecosystem-v1` owns the canonical JSON schemas and golden fixtures;
+Windows vendors a byte-identical SHA-256-pinned copy. These are contract scaffolding,
+not a new executor. The foundation gate consumes measured acceptance evidence;
+scripted tests cannot substitute for live runs. See
+[the implementation report](ECOSYSTEM-IMPLEMENTATION.md).
+
+- **Tests are colocated** — `foo.test.ts` sits next to `foo.ts` (vitest), not in a
+  separate `tests/` tree. Follow that for new modules.
+- **`ok: true` means it happened.** A `ToolResult` whose summary explains why something
+  *couldn't* be done must be `ok: false`, however polite the wording. Real offenders that
+  got through review: `record(media, "stop")` returning `ok: true` with "Recording isn't
+  supported on Android yet", `forget()` returning `ok: true` for "Nothing matched.", and
+  `remember()` returning `ok: true` after a `localStorage` write that threw. The model is
+  told tool results are the source of truth, so each of these made it report work it had
+  not done. `writeJson()` returns a boolean for exactly this reason — check it when you
+  are about to claim a save succeeded.
+- **A test that uses the tool's own internal names proves nothing.** `dispatch.test.ts`
+  called `customize_screen` with `"accent"` — an internal name the model can never emit —
+  and passed for months while every real call failed. Drive tests from the advertised
+  surface.
+- **Lint is clean — keep it that way.** `npm run lint` reports 0 problems (2026-09-25;
+  it was 85). The two `eslint-disable`s left each carry their reason. React component
+  files export only components (Fast Refresh); shared HUD values live in
+  `src/hud/hudConstants.js`. Tests may use `any` to build deliberately bad input.
+- **`src-tauri/gen/android` is tracked, not generated-and-ignored.** It holds hand edits
+  that matter: `allowBackup="false"`, the release build's cleartext rule (allowed only because PC pairing is
+  `ws://` inside the Tailscale tunnel — see `app/build.gradle.kts`), the
+  signing config, and `MainActivity`'s full `configChanges` list (any config relaunch
+  destroys the activity, and tao ends the process with it). Re-running `tauri android init` overwrites them — diff before you
+  commit. `tauri.settings.gradle` (absolute local paths) and keystores stay ignored.
+- **Check before you assume a feature is missing.** [STATUS.md](STATUS.md) records what's
+  been verified on a real device; a lot of what looks unfinished has been tested live.
+- **After changing code**, run `graphify update .` to keep the knowledge graph in
+  `graphify-out/` current (AST-only, no API cost).
